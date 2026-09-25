@@ -225,7 +225,7 @@ function resolveBuildOutputArtifact(root: string): GeneratedWorkerArtifact {
   return { configPath, main, serverDirectory: path.join(path.dirname(configPath), "bundle") };
 }
 
-function assertManifestModuleReachable(artifact: GeneratedWorkerArtifact): void {
+function assertModuleReachable(artifact: GeneratedWorkerArtifact, moduleName: string): void {
   const { main, serverDirectory } = artifact;
   const mainPath = path.resolve(serverDirectory, main);
   if (!fs.existsSync(mainPath) || !fs.lstatSync(mainPath).isFile()) {
@@ -255,16 +255,11 @@ function assertManifestModuleReachable(artifact: GeneratedWorkerArtifact): void 
     if (!entry || typeof entry.file !== "string") continue;
     const modulePath = path.resolve(serverDirectory, entry.file);
     if (fs.existsSync(modulePath) && fs.lstatSync(modulePath).isFile()) {
-      const relativeManifest = path
-        .relative(
-          path.dirname(modulePath),
-          path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE),
-        )
+      const relativeModule = path
+        .relative(path.dirname(modulePath), path.join(serverDirectory, moduleName))
         .split(path.sep)
         .join("/");
-      const specifier = relativeManifest.startsWith(".")
-        ? relativeManifest
-        : `./${relativeManifest}`;
+      const specifier = relativeModule.startsWith(".") ? relativeModule : `./${relativeModule}`;
       reachable = hasStaticModuleSpecifier(fs.readFileSync(modulePath, "utf8"), specifier);
     }
     for (const references of [entry.imports, entry.dynamicImports]) {
@@ -275,7 +270,7 @@ function assertManifestModuleReachable(artifact: GeneratedWorkerArtifact): void 
   }
   if (!reachable) {
     throw new Error(
-      `Two-stage CDN warming requires the generated Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}.`,
+      `Two-stage CDN warming requires the generated Worker graph to statically import ${moduleName}.`,
     );
   }
 }
@@ -311,7 +306,7 @@ export function writeCacheabilityManifestArtifact(
     deploymentTool === "cf"
       ? resolveBuildOutputArtifact(root)
       : resolveGeneratedWranglerArtifact(root, configuredPath);
-  assertManifestModuleReachable(artifact);
+  assertModuleReachable(artifact, CACHEABILITY_MANIFEST_MODULE);
   const { configPath, serverDirectory } = artifact;
   const manifestPath = path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE);
   if (!fs.existsSync(manifestPath) || !fs.lstatSync(manifestPath).isFile()) {
@@ -330,13 +325,13 @@ export function writeCacheabilityManifestArtifact(
     fs.existsSync(projectionPath) && fs.lstatSync(projectionPath).isFile();
   // Without the projection, the request stage would never drop the query for
   // the App page paths this manifest certifies.
-  if (
-    !hasProjectionModule &&
-    Object.values(manifest.routes).some((route) => route.kind === "app-page")
-  ) {
-    throw new Error(
-      `Two-stage CDN warming requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact. Rebuild the app before deploying.`,
-    );
+  if (Object.values(manifest.routes).some((route) => route.kind === "app-page")) {
+    if (!hasProjectionModule) {
+      throw new Error(
+        `Two-stage CDN warming requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact. Rebuild the app before deploying.`,
+      );
+    }
+    assertModuleReachable(artifact, CACHEABILITY_REQUEST_PROJECTION_MODULE);
   }
 
   writeStringModule(manifestPath, serializedManifest);
