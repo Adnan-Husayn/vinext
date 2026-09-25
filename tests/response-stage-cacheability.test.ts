@@ -168,7 +168,7 @@ describe("response-stage cacheability", () => {
       async (context) => {
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
         return new Response(body, { headers: { "Cache-Control": "no-store" } });
       },
@@ -261,7 +261,7 @@ describe("response-stage cacheability", () => {
         markRenderStarted();
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response(body);
       },
     ).finally(() => {
@@ -296,7 +296,7 @@ describe("response-stage cacheability", () => {
       async (context) => {
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/client-page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response("rendered");
       },
     );
@@ -343,7 +343,7 @@ describe("response-stage cacheability", () => {
           routePathname: "/target",
         });
         state.route = { kind: "app-page", pattern: "/target" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response("static");
       },
     );
