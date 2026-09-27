@@ -233,7 +233,6 @@ import {
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
-import { createClientDepScanPlugin } from "./plugins/client-dep-scan.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -3935,15 +3934,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // imports to leak to Node's native ESM loader (ERR_UNSUPPORTED_ESM_URL_SCHEME).
               consumer: "client",
               optimizeDeps: {
-                // Server externals are skipped only during discovery by
-                // vinext:client-dep-scan, so optional client requires stay catchable.
+                // Server externalization does not apply to the browser: excluding
+                // these packages hoists optional requires out of their try/catch.
                 exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
-                // Crawl app/ source files up front so client-only deps imported
-                // by user components are discovered during startup instead of
-                // triggering a late re-optimisation + full page reload.
-                entries: optimizeEntries,
-                // React packages aren't crawled from app/ source files,
-                // so must be pre-included to avoid late discovery (#25).
+                // app/ contains server files whose imports may have Node-only
+                // exports. Let Vite discover page dependencies from actual client
+                // requests; only browser instrumentation is a safe eager entry.
+                entries: instrumentationClientPath
+                  ? [toRelativeFileEntry(root, instrumentationClientPath)]
+                  : [],
+                // Seed React to avoid late discovery on the first request (#25).
                 include: [
                   ...new Set([
                     ...incomingInclude,
@@ -3955,9 +3955,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     "react/jsx-dev-runtime",
                   ]),
                 ],
-                // The client scanner also crawls app/ source files, so it
-                // needs the same JSX-in-`.js` handling (moduleTypes/loader) as
-                // the server optimizers. See getDepOptimizeNodeEnvOptions.
+                // Client instrumentation and user-supplied entries may use JSX
+                // in .js files, just like server optimizer entries.
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -7576,7 +7575,6 @@ export const loadServerActionClient = ${
       getRoot: () => root,
       getExternalPackages: () => resolvedServerExternalPackages,
     }),
-    createClientDepScanPlugin(() => (hasAppDir ? resolvedServerExternalPackages : [])),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that

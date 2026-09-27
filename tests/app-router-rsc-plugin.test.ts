@@ -56,18 +56,17 @@ describe("RSC plugin auto-registration", () => {
     expect(html).toContain("auto-rsc-test");
   });
 
-  it("skips server externals only during client dependency discovery", async () => {
+  it("keeps server entries and externalization out of client dependency discovery", async () => {
     // Next.js applies serverExternalPackages to its Node compiler, not the browser:
     // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/webpack-config.ts
     const client = server.environments.client;
     const importer = path.join(APP_FIXTURE_DIR, "app/page.tsx");
-    // Vite's scanner passes this internal flag through the plugin container.
-    const scanOptions = { scan: true, isEntry: false };
-    for (const id of ["canvas", "canvas/lib/bindings", "file-type", "file-type/core"]) {
-      expect(await client.pluginContainer.resolveId(id, importer, scanOptions)).toEqual({
-        id,
-        external: true,
-      });
+    expect(client.config.optimizeDeps.entries).toEqual(["instrumentation-client.ts"]);
+    for (const name of ["rsc", "ssr"]) {
+      expect(server.environments[name].config.optimizeDeps.entries).toContain(
+        "app/**/*.{tsx,ts,jsx,js}",
+      );
+      expect(server.environments[name].config.optimizeDeps.entries).toContain("instrumentation.ts");
     }
     for (const id of ["canvas", "file-type"]) {
       expect(client.config.optimizeDeps.exclude).not.toContain(id);
@@ -76,10 +75,6 @@ describe("RSC plugin auto-registration", () => {
       // Missing packages must still go through ordinary browser resolution.
       expect(await client.pluginContainer.resolveId(id, importer)).toBeNull();
     }
-    expect(await client.pluginContainer.resolveId("react", importer, scanOptions)).not.toEqual({
-      id: "react",
-      external: true,
-    });
   });
 
   it("serves the browser bootstrap in dev when deploymentId is configured", async () => {
