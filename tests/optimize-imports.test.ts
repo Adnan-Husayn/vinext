@@ -4,7 +4,7 @@
  * Uses a pre-populated barrel export map cache so no real packages need to be
  * installed. Each test uses a unique fake entry path to avoid cache collisions.
  */
-import { describe, it, expect, afterEach } from "vite-plus/test";
+import { describe, it, expect, afterEach, vi } from "vite-plus/test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -550,6 +550,11 @@ describe("vinext:optimize-imports transform", () => {
   async function setupTransform(
     packageName: string,
     barrelContents: string,
+    resolve = async (source: string) =>
+      ({ id: toSlash(path.join(tmpDir, "node_modules", source, "index.js")) }) as {
+        id: string;
+        external?: boolean;
+      } | null,
   ): Promise<(code: string, id: string) => Promise<ReturnType<(...args: any[]) => any>>> {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
@@ -582,7 +587,7 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
     // Return a caller that fakes the environment context as RSC (server)
     return async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call({ ...plugin, environment: { name: "rsc" }, resolve }, code, id);
   }
 
   afterEach(() => {
@@ -600,8 +605,12 @@ describe("vinext:optimize-imports transform", () => {
     const code = `import { Slot, Dialog } from "lucide-react";\nconst x = Slot;`;
     const result = await call(code, "/app/component.tsx");
     expect(result).not.toBeNull();
-    expect(result!.code).toContain(`import * as Slot from "@radix-ui/react-slot"`);
-    expect(result!.code).toContain(`import * as Dialog from "@radix-ui/react-dialog"`);
+    expect(result!.code).toContain(
+      `import * as Slot from ${JSON.stringify(toSlash(path.join(tmpDir, "node_modules/@radix-ui/react-slot/index.js")))}`,
+    );
+    expect(result!.code).toContain(
+      `import * as Dialog from ${JSON.stringify(toSlash(path.join(tmpDir, "node_modules/@radix-ui/react-dialog/index.js")))}`,
+    );
     expect(result!.code).not.toContain(`from "lucide-react"`);
   });
 
@@ -888,60 +897,40 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "./`);
   });
 
-  it("populates subpkgOrigin independently for RSC and SSR when they share the same barrel entry", async () => {
-    // Regression test: registeredBarrels used to be keyed only by barrelEntry (not envKey:barrelEntry).
-    // When RSC and SSR share the same barrel entry path (common — most packages have no react-server
-    // export condition), RSC would register the barrel first, and SSR would skip the inner loop
-    // entirely, leaving the SSR subpkgOrigin map empty. Subsequent resolveId calls from SSR would
-    // fall through to the cross-env fallback instead of hitting SSR's own map.
-    // After the fix, each environment maintains its own registeredBarrels key so both RSC and SSR
-    // independently populate their own subpkgOrigin maps.
-    tmpDir = toSlash(
-      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
-    );
-    fs.writeFileSync(
-      path.join(tmpDir, "package.json"),
-      JSON.stringify({ name: "test-app", type: "module" }),
-    );
-    // Use a package with no react-server condition so RSC and SSR resolve the same entry.
-    const pkgDir = path.join(tmpDir, "node_modules", "lucide-react");
-    fs.mkdirSync(pkgDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(pkgDir, "package.json"),
-      JSON.stringify({
-        name: "lucide-react",
-        type: "module",
-        main: "./index.js",
-      }),
-    );
-    // Barrel exports a named re-export from a scoped sub-package.
-    fs.writeFileSync(path.join(pkgDir, "index.js"), `export { Slot } from "@radix-ui/react-slot";`);
-
+  it("resolves cross-package exports with each environment's resolver", async () => {
+    await setupTransform("radix-ui", `export * as Slot from "@radix-ui/react-slot";`);
     const plugin = createOptimizeImportsPlugin(
       () => undefined,
       () => tmpDir,
-    ) as Plugin;
-    const buildStartHook = unwrapHook((plugin as any).buildStart);
-    if (buildStartHook) await buildStartHook.call(plugin);
+    );
+    await unwrapHook(plugin.buildStart)!.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
-
-    const rscCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
-    const ssrCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
-
-    // RSC processes the barrel first — this registers `rsc:<barrelEntry>`.
-    const rscResult = await rscCall(`import { Slot } from "lucide-react";`, "/app/page.tsx");
-    expect(rscResult).not.toBeNull();
-    expect(rscResult!.code).toContain(`from "@radix-ui/react-slot"`);
-
-    // SSR processes the same barrel next — with the bug it would skip the inner loop
-    // (barrelEntry already in registeredBarrels) and leave its subpkgOrigin map empty.
-    // With the fix it registers `ssr:<barrelEntry>` and populates its own map.
-    const ssrResult = await ssrCall(`import { Slot } from "lucide-react";`, "/app/layout.tsx");
-    expect(ssrResult).not.toBeNull();
-    expect(ssrResult!.code).toContain(`from "@radix-ui/react-slot"`);
+    const barrel = toSlash(path.join(tmpDir, "node_modules/radix-ui/index.js"));
+    for (const name of ["rsc", "ssr"]) {
+      const target = toSlash(path.join(tmpDir, `node_modules/@radix-ui/react-slot/${name}.js`));
+      const resolve = vi.fn(async () => ({ id: target }));
+      const result = await transform.call(
+        { environment: { name }, resolve },
+        `import { Slot } from "radix-ui";\nimport { Direct } from "@radix-ui/react-slot";`,
+        "/app/page.tsx",
+      );
+      expect(resolve).toHaveBeenCalledWith("@radix-ui/react-slot", barrel, { skipSelf: true });
+      expect(result.code).toContain(`import * as Slot from ${JSON.stringify(target)}`);
+      expect(result.code).toContain(`import { Direct } from "@radix-ui/react-slot"`);
+    }
   });
+
+  it.each([null, { id: "@radix-ui/react-slot", external: true }])(
+    "leaves the entire barrel import unchanged when a target cannot be bundled (%j)",
+    async (resolved) => {
+      const call = await setupTransform(
+        "radix-ui",
+        `export { Local } from "./local.js"; export * as Slot from "@radix-ui/react-slot";`,
+        async () => resolved,
+      );
+      expect(await call(`import { Local, Slot } from "radix-ui";`, "/app/page.tsx")).toBeNull();
+    },
+  );
 
   it("prefers react-server export condition in RSC but not in SSR", async () => {
     // Simulates a package (like react-dom) that exposes different barrel entries
