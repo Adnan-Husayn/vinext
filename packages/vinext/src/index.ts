@@ -233,6 +233,7 @@ import {
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
+import { createClientDepScanPlugin } from "./plugins/client-dep-scan.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -3934,19 +3935,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // imports to leak to Node's native ESM loader (ERR_UNSUPPORTED_ESM_URL_SCHEME).
               consumer: "client",
               optimizeDeps: {
-                // Exclude server-external packages from the client dep optimizer.
-                // These packages are server-only by design (listed in next.config's
-                // `serverExternalPackages`). If the client optimizer crawls into
-                // them through app/ entries, it will use browser export conditions
-                // and pick the wrong conditional export (e.g. `file-type` exports
-                // `fileTypeFromFile` only from its `node` condition via `index.js`,
-                // but the browser optimizer resolves to `core.js` which lacks it,
-                // causing MISSING_EXPORT build failures).
-                exclude: mergeOptimizeDepsExclude(
-                  incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
-                  nextServerExternal,
-                ),
+                // Server externals are skipped only during discovery by
+                // vinext:client-dep-scan, so optional client requires stay catchable.
+                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
                 // triggering a late re-optimisation + full page reload.
@@ -7585,6 +7576,7 @@ export const loadServerActionClient = ${
       getRoot: () => root,
       getExternalPackages: () => resolvedServerExternalPackages,
     }),
+    createClientDepScanPlugin(() => (hasAppDir ? resolvedServerExternalPackages : [])),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that

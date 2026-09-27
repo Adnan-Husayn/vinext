@@ -21,7 +21,12 @@ describe("RSC plugin auto-registration", () => {
       root: APP_FIXTURE_DIR,
       cacheDir: testCacheDir(APP_FIXTURE_DIR),
       configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      plugins: [
+        vinext({
+          appDir: APP_FIXTURE_DIR,
+          nextConfig: { serverExternalPackages: ["file-type"] },
+        }),
+      ],
       optimizeDeps: { holdUntilCrawlEnd: true },
       server: { port: 0, cors: false },
       logLevel: "silent",
@@ -49,6 +54,32 @@ describe("RSC plugin auto-registration", () => {
     const html = await res.text();
     expect(html).toContain("Blog Post");
     expect(html).toContain("auto-rsc-test");
+  });
+
+  it("skips server externals only during client dependency discovery", async () => {
+    // Next.js applies serverExternalPackages to its Node compiler, not the browser:
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/webpack-config.ts
+    const client = server.environments.client;
+    const importer = path.join(APP_FIXTURE_DIR, "app/page.tsx");
+    // Vite's scanner passes this internal flag through the plugin container.
+    const scanOptions = { scan: true, isEntry: false };
+    for (const id of ["canvas", "canvas/lib/bindings", "file-type", "file-type/core"]) {
+      expect(await client.pluginContainer.resolveId(id, importer, scanOptions)).toEqual({
+        id,
+        external: true,
+      });
+    }
+    for (const id of ["canvas", "file-type"]) {
+      expect(client.config.optimizeDeps.exclude).not.toContain(id);
+      expect(server.environments.rsc.config.resolve.external).toContain(id);
+      expect(server.environments.ssr.config.resolve.external).toContain(id);
+      // Missing packages must still go through ordinary browser resolution.
+      expect(await client.pluginContainer.resolveId(id, importer)).toBeNull();
+    }
+    expect(await client.pluginContainer.resolveId("react", importer, scanOptions)).not.toEqual({
+      id: "react",
+      external: true,
+    });
   });
 
   it("serves the browser bootstrap in dev when deploymentId is configured", async () => {
