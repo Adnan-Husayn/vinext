@@ -96,6 +96,8 @@ export type InitOptions = {
   port?: number | false;
   /** Skip the compatibility check step */
   skipCheck?: boolean;
+  /** @internal — skip CSS Modules migration in the Next.js deploy harness. */
+  skipCssModules?: boolean;
   /** Force overwrite even if vite.config.ts exists */
   force?: boolean;
   /** Deployment target selected by the user */
@@ -163,7 +165,14 @@ const CSS_MODULE_GLOBS = [
   "**/.*/**/*.module.{css,scss,sass}",
   "**/.*/**/.*.module.{css,scss,sass}",
 ];
-const CSS_MODULE_IGNORES = new Set(["node_modules", ".git", ".next", ".vinext", ".wrangler"]);
+const CSS_MODULE_IGNORES = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  ".vinext",
+  ".wrangler",
+  ".cloudflare",
+]);
 const CSS_MODULE_ROOT_IGNORES = new Set(["dist", "out", "build", "coverage"]);
 
 export function scanCssModuleFiles(root: string): boolean {
@@ -194,7 +203,7 @@ export function addScripts(
   options: {
     deployResponseStore?: boolean;
     warmCdnCache?: boolean;
-    experimentalCf?: boolean;
+    legacyWrangler?: boolean;
     scriptNames?: "namespaced" | "standard";
   } = {},
 ): string[] {
@@ -245,7 +254,7 @@ export function addScripts(
     addScript(
       "start",
       platform === "cloudflare"
-        ? options.experimentalCf
+        ? !options.legacyWrangler
           ? "vite preview"
           : "wrangler dev --config dist/server/wrangler.json"
         : "vinext start",
@@ -254,7 +263,7 @@ export function addScripts(
     if (platform === "cloudflare") {
       addScript(
         "deploy",
-        options.experimentalCf
+        !options.legacyWrangler
           ? options.warmCdnCache
             ? "vinext-cloudflare deploy --warm-cache"
             : "vinext-cloudflare deploy"
@@ -263,7 +272,7 @@ export function addScripts(
             : "vinext-cloudflare deploy --config dist/server/wrangler.json",
       );
       if (options.deployResponseStore && !pkg.scripts["deploy:response-store"]) {
-        pkg.scripts["deploy:response-store"] = options.experimentalCf
+        pkg.scripts["deploy:response-store"] = !options.legacyWrangler
           ? `cf deploy --prebuilt --mode production --worker ${compactResourceName(detectProject(root).projectName, "-response-store", 63)}`
           : "wrangler deploy --config wrangler.response-store.jsonc";
         added.push("deploy:response-store");
@@ -307,12 +316,12 @@ export function getInitDependencyGroups(
     ) {
       dependencies.push("@cloudflare/workers-response-store");
     }
-    if (cloudflare?.experimentalCf) {
+    if (!cloudflare?.legacyWrangler) {
       devDependencies[0] = "vite@8.3.0";
       // V2 SHA prereleases are not chronological semver versions; follow the beta tag.
       devDependencies.push("@cloudflare/vite-plugin@beta", "cf@latest");
     } else {
-      devDependencies.push("@cloudflare/vite-plugin", "wrangler");
+      devDependencies.push("@cloudflare/vite-plugin@1", "wrangler");
     }
   }
   if (hasCssModules) devDependencies.push("vite-css-modules", "postcss");
@@ -463,7 +472,7 @@ async function installDeps(
 export function updateGitignore(
   root: string,
   platform: InitPlatform = "node",
-  experimentalCf = false,
+  legacyWrangler = false,
 ): boolean {
   const gitignorePath = path.join(root, ".gitignore");
   const entries = [
@@ -475,7 +484,7 @@ export function updateGitignore(
       entry: ".vinext/",
       coveredBy: new Set(["/.vinext/", "/.vinext", ".vinext/", ".vinext"]),
     },
-    ...(platform === "cloudflare" && !experimentalCf
+    ...(platform === "cloudflare" && legacyWrangler
       ? [
           {
             entry: ".wrangler/",
@@ -483,7 +492,7 @@ export function updateGitignore(
           },
         ]
       : []),
-    ...(experimentalCf
+    ...(platform === "cloudflare" && !legacyWrangler
       ? [
           {
             entry: ".cloudflare/",
@@ -644,7 +653,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const viteConfigExists = hasViteConfig(root);
 
   const isApp = detectProject(root).isAppRouter;
-  const hasCssModules = scanCssModuleFiles(root);
+  const hasCssModules = !options.skipCssModules && scanCssModuleFiles(root);
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
@@ -700,7 +709,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
       options.cloudflare?.cdnCache === "response-store" &&
       (options.cloudflare.responseStoreMode ?? "service-binding") === "service-binding",
     warmCdnCache: options.cloudflare?.warmCdnCache ?? false,
-    experimentalCf: options.cloudflare?.experimentalCf ?? false,
+    legacyWrangler: options.cloudflare?.legacyWrangler,
     scriptNames: options.scriptNames,
   });
 
@@ -725,7 +734,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 5: Update .gitignore ──────────────────────────────────────────
 
-  const updatedGitignore = updateGitignore(root, platform, options.cloudflare?.experimentalCf);
+  const updatedGitignore = updateGitignore(root, platform, options.cloudflare?.legacyWrangler);
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
@@ -892,7 +901,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
       : "";
   const startCommandDescription =
     platform === "cloudflare"
-      ? options.cloudflare?.experimentalCf
+      ? !options.cloudflare?.legacyWrangler
         ? "Preview the built Worker locally"
         : "Start the built Worker locally with Wrangler"
       : "Start vinext production server";

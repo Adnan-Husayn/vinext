@@ -11,15 +11,34 @@ const tempRoot = fs.mkdtempSync(path.join(webRoot, ".init-cf-build-"));
 
 afterAll(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 
-describe("experimental cf init build", () => {
-  it("builds and type-checks a create-vinext-app --experimental-cf project", () => {
+function typecheckProject(root: string): void {
+  // Workspace-linked vinext resolves its dev Vite+ copy. Published consumers
+  // share the app's Vite peer; model that single type identity in this fixture.
+  const tsconfigPath = path.join(root, "tsconfig.json");
+  const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, "utf8"));
+  tsconfig.compilerOptions.paths ??= {};
+  tsconfig.compilerOptions.paths.vite = [
+    path.join(webRoot, "node_modules/vite/dist/node/index.d.ts"),
+  ];
+  fs.writeFileSync(tsconfigPath, JSON.stringify(tsconfig));
+  const tsc = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
+  const types = spawnSync(process.execPath, [tsc, "--project", "tsconfig.json"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  expect(types.status, `${types.stdout}\n${types.stderr}`).toBe(0);
+}
+
+describe("default cf init build", () => {
+  it("builds and type-checks a default create-vinext-app Cloudflare project", () => {
     const root = path.join(tempRoot, "created-cf-app");
     const create = spawnSync(
       process.execPath,
       [
         path.resolve(import.meta.dirname, "../packages/create-vinext-app/dist/cli.js"),
         root,
-        "--experimental-cf",
+        "--platform=cloudflare",
         "--cdn-cache=response-store",
         "--skip-install",
         "--disable-git",
@@ -70,21 +89,7 @@ describe("experimental cf init build", () => {
     );
     expect(responseStoreConfig.observability).toEqual(observability);
     expect(responseStoreConfig).not.toHaveProperty("accountId");
-    // Workspace-linked vinext resolves its dev Vite+ copy. Published consumers
-    // share the app's Vite peer; model that single type identity in this fixture.
-    const tsconfigPath = path.join(root, "tsconfig.json");
-    const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, "utf8"));
-    tsconfig.compilerOptions.paths.vite = [
-      path.join(webRoot, "node_modules/vite/dist/node/index.d.ts"),
-    ];
-    fs.writeFileSync(tsconfigPath, JSON.stringify(tsconfig));
-    const tsc = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
-    const types = spawnSync(process.execPath, [tsc, "--project", "tsconfig.json"], {
-      cwd: root,
-      encoding: "utf8",
-      timeout: 30_000,
-    });
-    expect(types.status, `${types.stdout}\n${types.stderr}`).toBe(0);
+    typecheckProject(root);
   }, 150_000);
 
   it.each([
@@ -92,6 +97,9 @@ describe("experimental cf init build", () => {
     ["pages-service-binding", "pages", "response-store", "service-binding"],
     ["self-contained", "app", "response-store", "self-contained"],
     ["workers-cache", "app", "workers-cache", undefined],
+    ["workers-cache-kv", "app", "workers-cache", undefined],
+    ["static-assets", "app", "static-assets", undefined],
+    ["kv", "app", "data-cache", undefined],
     ["pages", "pages", "none", undefined],
   ] as const)(
     "builds generated %s config",
@@ -121,6 +129,41 @@ describe("experimental cf init build", () => {
           "export default function Home() { return <main>cf init smoke test</main> }",
         );
       }
+      const hasCssModules = name === "service-binding" || name === "pages";
+      if (hasCssModules) {
+        // init installs this dependency for CSS Modules; reuse the workspace fixture's copy.
+        fs.mkdirSync(path.join(root, "node_modules"));
+        fs.symlinkSync(
+          path.resolve(
+            import.meta.dirname,
+            "fixtures/init-css-modules/node_modules/vite-css-modules",
+          ),
+          path.join(root, "node_modules/vite-css-modules"),
+          "junction",
+        );
+        fs.writeFileSync(path.join(root, router, "card.module.css"), ".card { color: red }");
+        fs.writeFileSync(
+          path.join(root, router, router === "app" ? "page.tsx" : "index.tsx"),
+          'import styles from "./card.module.css";\nexport default function Home() { return <main className={styles.card}>cf init smoke test</main> }',
+        );
+      }
+      // create-next-app uses bundler resolution without allowImportingTsExtensions:
+      // https://github.com/vercel/next.js/blob/canary/packages/create-next-app/templates/app/ts/tsconfig.json
+      const tsconfig = JSON.stringify({
+        compilerOptions: {
+          target: "ES2017",
+          lib: ["dom", "dom.iterable", "esnext"],
+          module: "esnext",
+          moduleResolution: "bundler",
+          noEmit: true,
+          strict: true,
+          skipLibCheck: true,
+        },
+        include: ["vite.config.ts", "cloudflare.config.ts", ".cloudflare/types"],
+      });
+      if (responseStoreMode === "service-binding") {
+        fs.writeFileSync(path.join(root, "tsconfig.json"), tsconfig);
+      }
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       try {
         await init({
@@ -130,15 +173,17 @@ describe("experimental cf init build", () => {
           install: false,
           _today: "2026-09-23",
           cloudflare: {
-            dataCache: "none",
+            dataCache: name === "workers-cache-kv" || name === "kv" ? "kv" : "none",
             cdnCache,
             responseStoreMode,
             imageOptimization: router === "pages" ? "cloudflare-images" : "none",
-            experimentalCf: true,
           },
         });
       } finally {
         log.mockRestore();
+      }
+      if (responseStoreMode === "service-binding") {
+        expect(fs.readFileSync(path.join(root, "tsconfig.json"), "utf8")).toBe(tsconfig);
       }
       const vinext = path.join(webRoot, "node_modules", ".bin", "vinext");
       const build = spawnSync(vinext, ["build"], {
@@ -150,6 +195,7 @@ describe("experimental cf init build", () => {
       expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
       expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(true);
       expect(fs.existsSync(path.join(root, "worker-configuration.d.ts"))).toBe(false);
+      if (responseStoreMode === "service-binding") typecheckProject(root);
       const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
       expect(
         fs.existsSync(path.join(workersDir, "default", "worker.config.json")),
@@ -164,7 +210,7 @@ describe("experimental cf init build", () => {
           ? `cf deploy --prebuilt --mode production --worker init-cf-${name}-response-store`
           : undefined,
       );
-      if (name === "service-binding") {
+      if (name === "service-binding" || name === "pages" || name === "static-assets") {
         const preview = spawn(
           path.join(webRoot, "node_modules", ".bin", "vite"),
           ["preview", "--host", "127.0.0.1", "--port", "0"],
@@ -198,7 +244,25 @@ describe("experimental cf init build", () => {
           });
           const response = await fetch(url);
           expect(response.status, output).toBe(200);
-          expect(await response.text()).toContain("cf init smoke test");
+          const html = await response.text();
+          expect(html).toContain("cf init smoke test");
+          if (hasCssModules) expect(html).toMatch(/class="_card_[a-f0-9]{7}"/);
+          if (name === "static-assets") {
+            expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+            const rsc = await fetch(url, { headers: { Accept: "text/x-component", RSC: "1" } });
+            expect(rsc.status).toBe(200);
+            expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
+            expect(await rsc.text()).toContain("cf init smoke test");
+            const cachePath = "/_vinext/static-cache";
+            const artifacts = fs.readdirSync(path.join(workersDir, "default/assets", cachePath));
+            expect(artifacts).toContain("index.json");
+            expect(artifacts.some((file) => file.endsWith(".html"))).toBe(true);
+            expect(artifacts.some((file) => file.endsWith(".rsc"))).toBe(true);
+            for (const file of artifacts) {
+              const privateAsset = await fetch(new URL(`${cachePath}/${file}`, url));
+              expect(privateAsset.status, file).toBe(404);
+            }
+          }
         } finally {
           preview.kill();
         }
