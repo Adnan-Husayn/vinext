@@ -129,6 +129,11 @@ function writeProject(prerenderConfig: string | undefined, cacheConfig?: string)
             'import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter";',
           ]
         : []),
+      ...(cacheConfig?.includes("staticAssetsAdapter")
+        ? [
+            'import { staticAssetsAdapter } from "../packages/cloudflare/src/cache/static-assets-adapter";',
+          ]
+        : []),
       "",
       "export default defineConfig({",
       `  plugins: [vinext({ ${[
@@ -736,6 +741,51 @@ export function createBuilder(config) {
           concurrency: undefined,
           nextConfig: expect.objectContaining({ output: "export" }),
         }),
+      );
+    },
+  );
+
+  it.each(["wrangler", "cf"])(
+    "packages local prerender output in the deployed %s assets directory",
+    async (deploymentTool) => {
+      writeProject("true", "{ cdn: staticAssetsAdapter() }");
+      if (deploymentTool === "cf") writeCfBuildOutputScaffolding();
+      const assetsDirectory =
+        deploymentTool === "cf" ? ".cloudflare/output/v0/workers/default/assets" : "build/client";
+      const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfigPath,
+        fs
+          .readFileSync(viteConfigPath, "utf8")
+          .replace("vinext({ prerender:", 'vinext({ clientOutDir: "build/client", prerender:'),
+      );
+      runPrerenderMock.mockImplementationOnce(async () => {
+        writeFile(
+          "dist/server/vinext-prerender.json",
+          JSON.stringify({
+            buildId: "build-1",
+            routes: [{ route: "/", status: "rendered", revalidate: false, router: "app" }],
+          }),
+        );
+        writeFile("dist/server/prerendered-routes/index.html", "<html>Home</html>");
+        writeFile("dist/server/prerendered-routes/index.rsc", "flight");
+        return { routes: [] };
+      });
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true });
+
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          root: tmpDir,
+          nextConfig: expect.not.objectContaining({ output: "export" }),
+        }),
+      );
+      expect(
+        fs.existsSync(path.join(tmpDir, assetsDirectory, "_vinext/static-cache/index.json")),
+      ).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, "dist/client/_vinext/static-cache/index.json"))).toBe(
+        false,
       );
     },
   );

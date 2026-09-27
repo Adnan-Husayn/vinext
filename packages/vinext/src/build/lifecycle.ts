@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import path from "pathslash";
 import type { Logger, Plugin, PluginOption, ResolvedConfig, UserConfig, ViteBuilder } from "vite";
 import {
+  finalizeCacheAdapterPrerenderOutput,
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
@@ -282,6 +283,13 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     vinextPrerenderConfig: context.prerenderConfig,
     nextOutput: context.nextConfig.output,
   });
+  const buildOutput = {
+    ...context.routeRootConfig,
+    rscOutDir: builder.environments.rsc?.config.build.outDir ?? context.routeRootConfig?.rscOutDir,
+    ssrOutDir: builder.environments.ssr?.config.build.outDir ?? context.routeRootConfig?.ssrOutDir,
+    clientOutDir:
+      builder.environments.client?.config.build.outDir ?? context.routeRootConfig?.clientOutDir,
+  };
   let prerenderResult;
   if (prerenderDecision) {
     if (context.nextConfig.enablePrerenderSourceMaps) {
@@ -297,8 +305,13 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
       root: context.root,
       concurrency: context.prerenderConcurrency,
       nextConfig: context.nextConfig,
-      routeRootConfig: context.routeRootConfig,
+      routeRootConfig: buildOutput,
     });
+    if (context.nextConfig.output !== "export") {
+      await finalizeCacheAdapterPrerenderOutput(context.cacheConfig, context.root, {
+        clientOutDir: buildOutput.clientOutDir,
+      });
+    }
     await emitPrerenderPathManifest({
       root: context.root,
       nextConfig: context.nextConfig,
@@ -309,7 +322,7 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
       requestRouting: hasUncachedRequestRouting(context.cacheConfig) ? "uncached-stage" : undefined,
       isResponsePolicyHeader: (name) =>
         isConfiguredCdnResponsePolicyHeader(context.cacheConfig, name),
-      routeRootConfig: context.routeRootConfig,
+      routeRootConfig: buildOutput,
     });
   }
 

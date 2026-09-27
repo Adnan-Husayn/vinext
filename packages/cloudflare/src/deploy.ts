@@ -45,6 +45,9 @@ import {
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
   cacheWarmupStatusSource,
+  finalizeCacheAdapterPrerenderOutput,
+  hasCacheAdapterPrerenderOutput,
+  formatVinextPrerenderLabel,
   requiresRouteCacheabilityProbeManifest,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
@@ -204,6 +207,22 @@ type DeployViteConfigMetadata = {
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
   routeRootConfig: VinextRouteRootConfig | null;
 };
+
+/** The typed cf Vite plugin emits Worker and asset bundles into Build Output. */
+export function resolvePrerenderOutputDirs(
+  root: string,
+  deploymentTool: DeploymentTool,
+  configured: VinextRouteRootConfig | null,
+): VinextRouteRootConfig | null {
+  if (deploymentTool !== "cf") return configured;
+  const workerDir = path.join(root, ".cloudflare", "output", "v0", "workers", "default");
+  if (!fs.existsSync(path.join(workerDir, "worker.config.json"))) return configured;
+  return {
+    ...configured,
+    rscOutDir: path.join(workerDir, "bundle"),
+    clientOutDir: path.join(workerDir, "assets"),
+  };
+}
 
 function parsePositiveIntegerArg(raw: string, flag: string): number {
   if (raw === "") {
@@ -2206,7 +2225,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     vinextPrerenderConfig,
     nextOutput: nextConfig.output,
   });
-  const shouldPrerenderLocally = nextConfig.output === "export";
+  const shouldPrerenderLocally = Boolean(
+    prerenderDecision &&
+    (nextConfig.output === "export" ||
+      hasCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig)),
+  );
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
   const hasStagedRequestRouting =
@@ -2233,6 +2256,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
+  const prerenderOutputDirs = resolvePrerenderOutputDirs(
+    info.root,
+    deploymentTool,
+    viteConfigMetadata.routeRootConfig,
+  );
 
   const canWarmTpr = options.experimentalTPR && !shouldPrerenderLocally && hasBuildIdentityHeader;
   if (options.experimentalTPR && shouldPrerenderLocally) {
@@ -2330,15 +2358,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
       isResponsePolicyHeader: (name) =>
         isConfiguredCdnResponsePolicyHeader(viteConfigMetadata.cacheConfig, name),
-      routeRootConfig: viteConfigMetadata.routeRootConfig,
+      routeRootConfig: prerenderOutputDirs,
     });
   }
 
-  // Step 6a: static export still requires local prerendered artifacts. Worker
-  // deployments render through the deployed Worker during cache warming.
+  // Step 6a: static exports and adapters that package prerender output still
+  // require local artifacts. Other Worker deployments render during cache warming.
   let prerenderResult: Awaited<ReturnType<typeof runPrerender>> | undefined = undefined;
-  if (shouldPrerenderLocally) {
-    console.log("\n  Pre-rendering all routes (output: 'export')...");
+  if (shouldPrerenderLocally && prerenderDecision) {
+    console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
@@ -2347,8 +2375,13 @@ export async function deploy(options: DeployOptions): Promise<void> {
       root: info.root,
       concurrency: options.prerenderConcurrency ?? viteConfigMetadata.prerenderConfig?.concurrency,
       nextConfig,
-      routeRootConfig: viteConfigMetadata.routeRootConfig,
+      routeRootConfig: prerenderOutputDirs,
     });
+    if (nextConfig.output !== "export") {
+      await finalizeCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig, info.root, {
+        clientOutDir: prerenderOutputDirs?.clientOutDir,
+      });
+    }
   }
 
   if (!options.skipBuild) {

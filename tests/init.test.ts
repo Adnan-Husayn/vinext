@@ -792,6 +792,150 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).not.toContain("prerender:");
   });
 
+  it("configures prerendering when the Cloudflare Static Assets cache is selected", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+      },
+    });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain("cdn: staticAssetsAdapter()");
+    expect(config).toContain('prerender: { routes: "*" }');
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      assets: { directory: "dist/client", binding: "ASSETS" },
+    });
+  });
+
+  it("configures the typed cf asset binding to protect packaged prerender entries", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+        experimentalCf: true,
+      },
+    });
+
+    const vite = readFile(tmpDir, "vite.config.ts");
+    expect(vite).toContain("cdn: staticAssetsAdapter()");
+    expect(vite).toContain('prerender: { routes: "*" }');
+    expect(vite).not.toContain("clientOutDir:");
+    const config = readFile(tmpDir, "cloudflare.config.ts");
+    expect(config).toContain(
+      'assets: { notFoundHandling: "none", runWorkerFirst: ["/_vinext/static-cache/*"] }',
+    );
+    expect(config).toContain("ASSETS: bindings.assets()");
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+  });
+
+  it.each(["ASSETS", "STATIC"])(
+    "rejects Static Assets init on an existing typed config without mutating its %s binding",
+    async (binding) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(
+        tmpDir,
+        "cloudflare.config.ts",
+        `import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+export default defineConfig({ worker: defineWorker({ name: "test-app", env: { ${binding}: bindings.assets() } }) });
+`,
+      );
+      writeFile(
+        tmpDir,
+        "vite.config.ts",
+        `import vinext from "vinext";
+import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";
+export default { plugins: [vinext({ cache: { cdn: staticAssetsAdapter({ binding: "${binding}" }) } })] };
+`,
+      );
+      const before = snapshotProject(tmpDir);
+
+      await expect(
+        runInit(tmpDir, {
+          cloudflare: {
+            dataCache: "none",
+            cdnCache: "static-assets",
+            imageOptimization: "none",
+            experimentalCf: true,
+          },
+        }),
+      ).rejects.toThrow("Static Assets cache setup for an existing cloudflare.config.ts");
+
+      expect(snapshotProject(tmpDir)).toBe(before);
+    },
+  );
+
+  it("preserves a custom Wrangler assets binding for the Static Assets cache", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        main: "vinext/server/fetch-handler",
+        assets: { directory: "build/client", not_found_handling: "none", binding: "STATIC" },
+      }),
+    );
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+      },
+    });
+
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      'cdn: staticAssetsAdapter({ binding: "STATIC" })',
+    );
+    expect(readFile(tmpDir, "vite.config.ts")).toContain('clientOutDir: "build/client"');
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).assets.binding).toBe("STATIC");
+  });
+
+  it("does not replace an existing custom CDN adapter with Static Assets", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import vinext from "vinext";
+import { customCdn } from "./custom-cache.js";
+export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
+`,
+    );
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "static-assets",
+          imageOptimization: "none",
+        },
+      }),
+    ).rejects.toThrow("does not match the selected Static Assets cache");
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects the Static Assets cache for Pages Router projects", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "static-assets",
+          imageOptimization: "none",
+        },
+      }),
+    ).rejects.toThrow("Static Assets cache currently requires an App Router project");
+    expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
+  });
+
   it("generates Node vite.config.ts with prerender when opted in", async () => {
     setupProject(tmpDir, { router: "pages" });
 
