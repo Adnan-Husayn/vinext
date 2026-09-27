@@ -139,8 +139,25 @@ describe("optimizePackageImports integration", () => {
       }
       fs.writeFileSync(
         path.join(barrel, "index.js"),
-        `export * as Slot from "@radix-ui/react-slot";`,
+        `export * as Slot from "@radix-ui/react-slot";
+export { condition } from "@radix-ui/conditional";`,
       );
+      const conditional = path.join(barrelModules, "@radix-ui", "conditional");
+      fs.mkdirSync(conditional, { recursive: true });
+      fs.writeFileSync(
+        path.join(conditional, "package.json"),
+        JSON.stringify({
+          name: "@radix-ui/conditional",
+          type: "module",
+          exports: { ".": { "react-server": "./rsc.js", default: "./ssr.js" } },
+        }),
+      );
+      for (const environment of ["rsc", "ssr"]) {
+        fs.writeFileSync(
+          path.join(conditional, `${environment}.js`),
+          `export const condition = "${environment}-condition";`,
+        );
+      }
       fs.writeFileSync(
         path.join(slot, "index.js"),
         `"use client";
@@ -150,8 +167,8 @@ export function Root({ children }) { return createElement("span", null, children
       fs.writeFileSync(
         path.join(root, "app", "client.tsx"),
         `"use client";
-import { Slot } from "radix-ui";
-export default function Client() { return <Slot.Root>slot-client</Slot.Root>; }`,
+import { Slot, condition } from "radix-ui";
+export default function Client() { return <Slot.Root>slot-client {condition}</Slot.Root>; }`,
       );
       if (appCopy) {
         const direct = path.join(modules, "@radix-ui", "react-slot");
@@ -164,13 +181,17 @@ export default function Client() { return <Slot.Root>slot-client</Slot.Root>; }`
           path.join(direct, "index.js"),
           `export const version = "app-slot-version";`,
         );
+        fs.writeFileSync(
+          path.join(modules, "custom-icons", "index.js"),
+          `export { version } from "@radix-ui/react-slot";`,
+        );
       }
       fs.writeFileSync(
         path.join(root, "app", "page.tsx"),
-        `import { Slot } from "radix-ui";
-${appCopy ? 'import { version } from "@radix-ui/react-slot";' : 'const version = "no-app-copy";'}
+        `import { Slot, condition } from "radix-ui";
+${appCopy ? 'import { version } from "@radix-ui/react-slot"; import { version as otherVersion } from "custom-icons";' : 'const version = "no-app-copy", otherVersion = version;'}
 import Client from "./client";
-export default function Page() { return <main><Slot.Root>slot-server</Slot.Root><Client /><p>{version}</p></main>; }`,
+export default function Page() { return <main><Slot.Root>slot-server</Slot.Root><Client /><p>{condition}</p><p>{version === otherVersion ? version : "wrong-package-version"}</p></main>; }`,
       );
 
       let resolves = 0;
@@ -201,6 +222,8 @@ export default function Page() { return <main><Slot.Root>slot-server</Slot.Root>
       const devHtml = await devResponse.text();
       expect(devHtml).toContain("slot-server");
       expect(devHtml).toContain("slot-client");
+      expect(devHtml).toContain("rsc-condition");
+      expect(devHtml).toContain("ssr-condition");
       expect(devHtml).toContain(appCopy ? "app-slot-version" : "no-app-copy");
       await server.close();
       server = null;
@@ -215,6 +238,8 @@ export default function Page() { return <main><Slot.Root>slot-server</Slot.Root>
       const html = await response.text();
       expect(html).toContain("slot-server");
       expect(html).toContain("slot-client");
+      expect(html).toContain("rsc-condition");
+      expect(html).toContain("ssr-condition");
       expect(html).toContain(appCopy ? "app-slot-version" : "no-app-copy");
     },
     120000,
