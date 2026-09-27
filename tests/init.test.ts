@@ -2,9 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
 import {
   init,
   generateViteConfig,
+  scanCssModuleFiles,
   addScripts,
   getInitDeps,
   isDepInstalled,
@@ -38,6 +41,102 @@ function readPkg(dir: string): Record<string, unknown> {
 function readFile(dir: string, relativePath: string): string {
   return fs.readFileSync(path.join(dir, relativePath), "utf-8");
 }
+
+describe("CSS Modules discovery", () => {
+  it("finds CSS, Sass, and hidden source modules without scanning dependencies or output", () => {
+    writeFile(tmpDir, "node_modules/lib/ignored.module.css", "");
+    writeFile(tmpDir, "dist/ignored.module.scss", "");
+    expect(scanCssModuleFiles(tmpDir)).toBe(false);
+    writeFile(tmpDir, "components/.private/.card.module.sass", "");
+    expect(scanCssModuleFiles(tmpDir)).toBe(true);
+  });
+
+  it("generates identical class names for server and client module ids", () => {
+    const config = generateViteConfig(false, false, true);
+    const method = config.match(
+      /generateScopedName\(name: string, filename: string\) \{[\s\S]*?\n\s*\}/,
+    )?.[0];
+    expect(method).toBeDefined();
+    const { generateScopedName } = runInNewContext(
+      `({${method!.replace("name: string, filename: string", "name, filename").replace("import.meta.dirname", JSON.stringify(tmpDir))}})`,
+      { createHash, path },
+    ) as { generateScopedName: (name: string, filename: string) => string };
+    const file = path.join(tmpDir, "components", "button.module.css");
+    expect(generateScopedName("default", `${file}?client`)).toBe(
+      generateScopedName("default", `${file}?server`),
+    );
+    expect(generateScopedName("default", file)).toMatch(/^_default_[a-f0-9]{7}$/);
+  });
+
+  it.each(["node", "cloudflare"] as const)("configures a fresh %s project", async (platform) => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pages/card.module.css", ".default { color: red }");
+    const { execCalls } = await runInit(tmpDir, { platform });
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain('patchCssModules({ exportMode: "default" })');
+    expect(config).toContain("generateScopedName(name: string, filename: string)");
+    expect(execCalls.some(({ cmd }) => cmd.includes("vite-css-modules"))).toBe(true);
+  });
+
+  it.each([false, true])(
+    "updates an existing Cloudflare config without dropping CSS options (typed cf: %s)",
+    async (experimentalCf) => {
+      setupProject(tmpDir, { router: "pages" });
+      writeFile(tmpDir, "pages/card.module.css", ".card { color: red }");
+      writeFile(
+        tmpDir,
+        "vite.config.ts",
+        'import vinext from "vinext";\nexport default { plugins: [vinext()], css: { modules: { localsConvention: "camelCase" } } };',
+      );
+      await runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          experimentalCf,
+        },
+      });
+      const config = readFile(tmpDir, "vite.config.ts");
+      expect(config).toContain('patchCssModules({ exportMode: "default" })');
+      expect(config).toContain('localsConvention: "camelCase"');
+      expect(config).toContain("cloudflare()");
+    },
+  );
+
+  it.each(["app", "pages"] as const)(
+    "configures a fresh typed Cloudflare %s project with CSS Modules",
+    async (router) => {
+      setupProject(tmpDir, { router });
+      writeFile(tmpDir, `${router}/card.module.css`, ".default { color: red }");
+      await runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          experimentalCf: true,
+        },
+      });
+      const config = readFile(tmpDir, "vite.config.ts");
+      expect(config).toContain('patchCssModules({ exportMode: "default" })');
+      expect(config).toContain("generateScopedName(name: string, filename: string)");
+    },
+  );
+
+  it("rejects mutable configs before modifying a Node project", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pages/card.module.css", ".card { color: red }");
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      "const config = { plugins: [] }; config.plugins = [vinext()]; export default config;",
+    );
+    const before = snapshotProject(tmpDir);
+    expect(await runInitExpectExit(tmpDir, { platform: "node" })).toContain(
+      "inline Vite config object",
+    );
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+});
 
 function snapshotProject(dir: string): string {
   const entries: string[] = [];
