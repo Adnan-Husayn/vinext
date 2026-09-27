@@ -46,6 +46,7 @@ describe("CSS Modules discovery", () => {
   it("finds CSS, Sass, and hidden source modules without scanning dependencies or output", () => {
     writeFile(tmpDir, "node_modules/lib/ignored.module.css", "");
     writeFile(tmpDir, "dist/ignored.module.scss", "");
+    writeFile(tmpDir, ".cloudflare/output/ignored.module.css", "");
     expect(scanCssModuleFiles(tmpDir)).toBe(false);
     writeFile(tmpDir, "components/.private/.card.module.sass", "");
     expect(scanCssModuleFiles(tmpDir)).toBe(true);
@@ -79,8 +80,8 @@ describe("CSS Modules discovery", () => {
   });
 
   it.each([false, true])(
-    "updates an existing Cloudflare config without dropping CSS options (typed cf: %s)",
-    async (experimentalCf) => {
+    "updates an existing Cloudflare config without dropping CSS options (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
       setupProject(tmpDir, { router: "pages" });
       writeFile(tmpDir, "pages/card.module.css", ".card { color: red }");
       writeFile(
@@ -93,7 +94,7 @@ describe("CSS Modules discovery", () => {
           dataCache: "none",
           cdnCache: "none",
           imageOptimization: "none",
-          experimentalCf,
+          legacyWrangler,
         },
       });
       const config = readFile(tmpDir, "vite.config.ts");
@@ -113,7 +114,6 @@ describe("CSS Modules discovery", () => {
           dataCache: "none",
           cdnCache: "none",
           imageOptimization: "none",
-          experimentalCf: true,
         },
       });
       const config = readFile(tmpDir, "vite.config.ts");
@@ -239,7 +239,8 @@ function noopExec(): {
 }
 
 /**
- * Run init with a no-op exec and suppressed console output.
+ * Run init with a no-op exec and suppressed console output. Existing Wrangler
+ * regression fixtures opt into legacy mode; explicit Cloudflare options use cf.
  */
 async function runInit(
   dir: string,
@@ -273,6 +274,7 @@ async function runInit(
         dataCache: "kv",
         cdnCache: "workers-cache",
         imageOptimization: "cloudflare-images",
+        legacyWrangler: true,
       },
       ...opts,
     });
@@ -387,10 +389,8 @@ describe("addScripts", () => {
 
     expect(added).toContain("deploy:vinext");
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
-    expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json",
-    );
+    expect(pkg.scripts["start:vinext"]).toBe("vite preview");
+    expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
   });
 
   it("adds a separate Response Store deploy script when requested", () => {
@@ -401,7 +401,7 @@ describe("addScripts", () => {
     expect(added).toContain("deploy:response-store");
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["deploy:response-store"]).toBe(
-      "wrangler deploy --config wrangler.response-store.jsonc",
+      "cf deploy --prebuilt --mode production --worker test-project-response-store",
     );
   });
 
@@ -415,8 +415,8 @@ describe("addScripts", () => {
     expect(pkg.scripts).toEqual({
       dev: "vite dev",
       build: "vite build",
-      start: "wrangler dev --config dist/server/wrangler.json",
-      deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
+      start: "vite preview",
+      deploy: "vinext-cloudflare deploy",
     });
   });
 
@@ -427,9 +427,7 @@ describe("addScripts", () => {
 
     expect(added).toContain("deploy:vinext");
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cache",
-    );
+    expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy --warm-cache");
   });
 
   it("uses custom port", () => {
@@ -441,7 +439,7 @@ describe("addScripts", () => {
     expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 4000");
   });
 
-  it.each([false, true])("does not overwrite existing scripts (cf: %s)", (experimentalCf) => {
+  it.each([false, true])("does not overwrite existing scripts (legacy: %s)", (legacyWrangler) => {
     setupProject(tmpDir, {
       router: "app",
       extraPkg: {
@@ -455,7 +453,7 @@ describe("addScripts", () => {
 
     const added = addScripts(tmpDir, 3001, "cloudflare", {
       deployResponseStore: true,
-      experimentalCf,
+      legacyWrangler,
     });
 
     expect(added).not.toContain("dev:vinext");
@@ -466,7 +464,7 @@ describe("addScripts", () => {
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["dev:vinext"]).toBe("custom-command");
     expect(pkg.scripts["start:vinext"]).toBe(
-      experimentalCf ? "vite preview" : "wrangler dev --config dist/server/wrangler.json",
+      legacyWrangler ? "wrangler dev --config dist/server/wrangler.json" : "vite preview",
     );
     expect(pkg.scripts["deploy:vinext"]).toBe("custom-deploy");
     expect(pkg.scripts["deploy:response-store"]).toBe("custom-response-store-deploy");
@@ -527,7 +525,7 @@ describe("getInitDeps", () => {
   it("returns vinext + vite + @vitejs/plugin-react + App Router deps for App Router", () => {
     const deps = getInitDeps(true, "cloudflare");
     expect(deps).toContain("vinext");
-    expect(deps).toContain("vite");
+    expect(deps).toContain("vite@8.3.0");
     expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).toContain("@vitejs/plugin-rsc");
     expect(deps).toContain("react-server-dom-webpack");
@@ -536,7 +534,7 @@ describe("getInitDeps", () => {
   it("returns vinext + vite + @vitejs/plugin-react for Pages Router", () => {
     const deps = getInitDeps(false, "cloudflare");
     expect(deps).toContain("vinext");
-    expect(deps).toContain("vite");
+    expect(deps).toContain("vite@8.3.0");
     expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).not.toContain("@vitejs/plugin-rsc");
     expect(deps).not.toContain("react-server-dom-webpack");
@@ -544,8 +542,9 @@ describe("getInitDeps", () => {
 
   it("adds Cloudflare deployment dependencies for the Cloudflare platform", () => {
     const deps = getInitDeps(true, "cloudflare");
-    expect(deps).toContain("@cloudflare/vite-plugin");
-    expect(deps).toContain("wrangler");
+    expect(deps).toContain("@cloudflare/vite-plugin@beta");
+    expect(deps).toContain("cf@latest");
+    expect(deps).not.toContain("wrangler");
     expect(deps).toContain("@vinext/cloudflare");
   });
 
@@ -745,6 +744,7 @@ describe("init — basic functionality", () => {
     const { result, output } = await runInit(tmpDir, {
       install: false,
       cloudflare: {
+        legacyWrangler: true,
         dataCache: "none",
         cdnCache: "response-store",
         imageOptimization: "none",
@@ -813,6 +813,7 @@ describe("init — basic functionality", () => {
     await runInit(tmpDir, {
       install: false,
       cloudflare: {
+        legacyWrangler: true,
         dataCache: "none",
         cdnCache: "response-store",
         imageOptimization: "none",
@@ -854,6 +855,7 @@ describe("init — basic functionality", () => {
       runInit(tmpDir, {
         install: false,
         cloudflare: {
+          legacyWrangler: true,
           dataCache: "none",
           cdnCache: "response-store",
           imageOptimization: "none",
@@ -873,6 +875,7 @@ describe("init — basic functionality", () => {
       runInit(tmpDir, {
         install: false,
         cloudflare: {
+          legacyWrangler: true,
           dataCache: "none",
           cdnCache: "response-store",
           imageOptimization: "none",
@@ -891,7 +894,7 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).not.toContain("prerender:");
   });
 
-  it("configures prerendering when the Cloudflare Static Assets cache is selected", async () => {
+  it("configures legacy Wrangler prerendering when the Static Assets cache is selected", async () => {
     setupProject(tmpDir, { router: "app" });
 
     await runInit(tmpDir, {
@@ -899,6 +902,7 @@ describe("init — basic functionality", () => {
         dataCache: "none",
         cdnCache: "static-assets",
         imageOptimization: "none",
+        legacyWrangler: true,
       },
     });
 
@@ -918,7 +922,6 @@ describe("init — basic functionality", () => {
         dataCache: "none",
         cdnCache: "static-assets",
         imageOptimization: "none",
-        experimentalCf: true,
       },
     });
 
@@ -961,7 +964,6 @@ export default { plugins: [vinext({ cache: { cdn: staticAssetsAdapter({ binding:
             dataCache: "none",
             cdnCache: "static-assets",
             imageOptimization: "none",
-            experimentalCf: true,
           },
         }),
       ).rejects.toThrow("Static Assets cache setup for an existing cloudflare.config.ts");
@@ -986,6 +988,7 @@ export default { plugins: [vinext({ cache: { cdn: staticAssetsAdapter({ binding:
         dataCache: "none",
         cdnCache: "static-assets",
         imageOptimization: "none",
+        legacyWrangler: true,
       },
     });
 
@@ -1044,8 +1047,8 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
   });
 
   it.each([false, true])(
-    "configures prerender and warns when not served (typed cf: %s)",
-    async (experimentalCf) => {
+    "configures prerender and warns when not served (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
       setupProject(tmpDir, { router: "app" });
       const { output } = await runInit(tmpDir, {
         prerender: true,
@@ -1053,7 +1056,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           dataCache: "none",
           cdnCache: "none",
           imageOptimization: "none",
-          experimentalCf,
+          legacyWrangler,
         },
       });
       expect(readFile(tmpDir, "vite.config.ts")).toContain('prerender: { routes: "*" }');
@@ -1064,8 +1067,8 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
   );
 
   it.each([false, true])(
-    "does not warn about unserved Static Assets prerendering (typed cf: %s)",
-    async (experimentalCf) => {
+    "does not warn about unserved Static Assets prerendering (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
       setupProject(tmpDir, { router: "app" });
       const { output } = await runInit(tmpDir, {
         prerender: true,
@@ -1073,7 +1076,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           dataCache: "none",
           cdnCache: "static-assets",
           imageOptimization: "none",
-          experimentalCf,
+          legacyWrangler,
         },
       });
       expect(readFile(tmpDir, "vite.config.ts")).toContain('prerender: { routes: "*" }');
@@ -1187,7 +1190,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(readFile(tmpDir, "cloudflare.config.ts")).toBe("export default {};\n");
   });
 
-  it("generates typed Cloudflare config without Wrangler for both routers", async () => {
+  it("defaults to typed Cloudflare config without Wrangler for both routers", async () => {
     for (const router of ["app", "pages"] as const) {
       const root = path.join(tmpDir, router);
       fs.mkdirSync(root);
@@ -1198,7 +1201,6 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           dataCache: "none",
           cdnCache: "none",
           imageOptimization: "cloudflare-images",
-          experimentalCf: true,
         },
       });
       expect(result.generatedPlatformFiles).toEqual(["cloudflare.config.ts"]);
@@ -1236,7 +1238,6 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
             mode === "service-binding" || mode === "self-contained" ? "response-store" : mode,
           responseStoreMode: mode === "self-contained" ? "self-contained" : "service-binding",
           imageOptimization: mode === "service-binding" ? "cloudflare-images" : "none",
-          experimentalCf: true,
         },
       });
       const config = readFile(tmpDir, "cloudflare.config.ts");
@@ -1270,7 +1271,6 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
         cdnCache: "response-store",
         responseStoreMode: "service-binding",
         imageOptimization: "none",
-        experimentalCf: true,
       },
     });
     expect(result.generatedPlatformFiles).toEqual(["cloudflare.config.ts"]);
@@ -1296,14 +1296,13 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
         cdnCache: "response-store",
         responseStoreMode: "service-binding",
         imageOptimization: "none",
-        experimentalCf: true,
       },
     });
     expect(readFile(tmpDir, "vite.config.ts")).toBe(vite);
     expect(readFile(tmpDir, "cloudflare.config.ts")).toBe(typedConfig);
   });
 
-  it("rejects an existing Wrangler config before mutating an experimental cf project", async () => {
+  it("rejects an existing Wrangler config before mutating a cf project", async () => {
     setupProject(tmpDir);
     writeFile(tmpDir, "wrangler.jsonc", "{}\n");
     const before = snapshotProject(tmpDir);
@@ -1313,10 +1312,9 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           dataCache: "none",
           cdnCache: "none",
           imageOptimization: "none",
-          experimentalCf: true,
         },
       }),
-    ).rejects.toThrow("existing Wrangler config");
+    ).rejects.toThrow("--legacy-wrangler-cloudflare-init");
     expect(snapshotProject(tmpDir)).toBe(before);
   });
 
@@ -1331,7 +1329,6 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           cdnCache: "response-store",
           responseStoreMode: "service-binding",
           imageOptimization: "none",
-          experimentalCf: true,
         },
       }),
     ).rejects.toThrow("must export responseStoreServiceBinding");
@@ -1350,9 +1347,9 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(config).not.toContain("data:");
     expect(config).not.toContain("cdn:");
     expect(config).not.toContain("imagesOptimizer");
-    const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
-    expect(wrangler.kv_namespaces).toBeUndefined();
-    expect(wrangler.images).toBeUndefined();
+    const cloudflare = readFile(tmpDir, "cloudflare.config.ts");
+    expect(cloudflare).not.toContain("bindings.kv(");
+    expect(cloudflare).not.toContain("bindings.images(");
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
   });
 
@@ -1381,6 +1378,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     await runInit(tmpDir, {
       platform: "cloudflare",
       cloudflare: {
+        legacyWrangler: true,
         dataCache: "kv",
         cdnCache: "workers-cache",
         imageOptimization: "cloudflare-images",
@@ -1538,9 +1536,7 @@ export default { plugins: [vinext({ cache: { data: customData() }, prerender: tr
     });
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json",
-    );
+    expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
   });
 
   it("does not add deploy:vinext for Node init", async () => {
@@ -1653,7 +1649,6 @@ describe("init — dependency installation", () => {
         dataCache: "none",
         cdnCache: "none",
         imageOptimization: "none",
-        experimentalCf: true,
       },
     });
     const install = execCalls.find(({ cmd }) => cmd.includes("@cloudflare/vite-plugin@"));
@@ -1994,7 +1989,7 @@ describe("init — dependency installation", () => {
       vite: "latest",
       "@vitejs/plugin-react": "latest",
       "@vitejs/plugin-rsc": "latest",
-      "@cloudflare/vite-plugin": "latest",
+      "@cloudflare/vite-plugin": "1",
       wrangler: "latest",
     });
   });
@@ -2478,8 +2473,16 @@ describe("updateGitignore", () => {
     expect(content).toBe("node_modules/\n/dist/\n/.vinext/\n");
   });
 
-  it("adds .wrangler/ for the Cloudflare platform", () => {
+  it("adds .cloudflare/ for the Cloudflare platform by default", () => {
     const result = updateGitignore(tmpDir, "cloudflare");
+
+    expect(result).toBe(true);
+    expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n.cloudflare/\n");
+    expect(updateGitignore(tmpDir, "cloudflare")).toBe(false);
+  });
+
+  it("adds .wrangler/ for legacy Cloudflare init", () => {
+    const result = updateGitignore(tmpDir, "cloudflare", true);
 
     expect(result).toBe(true);
     expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n.wrangler/\n");
@@ -2488,7 +2491,7 @@ describe("updateGitignore", () => {
   it("does not duplicate an existing Wrangler directory entry", () => {
     writeFile(tmpDir, ".gitignore", "/dist/\n.vinext/\n/.wrangler/\n");
 
-    const result = updateGitignore(tmpDir, "cloudflare");
+    const result = updateGitignore(tmpDir, "cloudflare", true);
 
     expect(result).toBe(false);
     expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n/.wrangler/\n");
