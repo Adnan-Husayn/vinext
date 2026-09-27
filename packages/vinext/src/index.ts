@@ -2109,6 +2109,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let transformBundledCommonJsDependencies = false;
   const commonJsPlugin = commonjs({
     filter(id: string) {
+      // The published runtime and its inlined dependencies are already ESM.
+      // This filter also runs during dependency scanning, which bypasses the
+      // environment-aware transform hook below.
+      if (isPathInside(__dirname, toSlash(stripViteModuleQuery(id)))) return false;
       return commonjsTransformFilter(
         id,
         transformProjectLocalCommonJs,
@@ -2128,12 +2132,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // Nitro service entries are already bundled ESM. Inlined CommonJS
       // wrappers must not make vite-plugin-commonjs add a second default export.
       if (/^[^/]+\/entry\.js$/.test(nitroServicePath)) return null;
-
-      // The published runtime and its inlined dependencies were already
-      // converted to ESM by tsdown. Workspace links resolve them outside
-      // node_modules, where vite-plugin-commonjs would otherwise process them
-      // again and can append a duplicate default export.
-      if (isPathInside(__dirname, toSlash(stripViteModuleQuery(id)))) return null;
 
       // The independent optimizeDeps Rolldown build already converted these
       // files to ESM. Running vite-plugin-commonjs over its output would append

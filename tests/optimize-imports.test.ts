@@ -14,7 +14,7 @@ import {
   createOptimizeImportsPlugin,
   DEFAULT_OPTIMIZE_PACKAGES,
 } from "../packages/vinext/src/plugins/optimize-imports.js";
-import type { Plugin } from "vite-plus";
+import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { toSlash } from "pathslash";
 
@@ -550,11 +550,6 @@ describe("vinext:optimize-imports transform", () => {
   async function setupTransform(
     packageName: string,
     barrelContents: string,
-    resolve = async (source: string) =>
-      ({ id: toSlash(path.join(tmpDir, "node_modules", source, "index.js")) }) as {
-        id: string;
-        external?: boolean;
-      } | null,
   ): Promise<(code: string, id: string) => Promise<ReturnType<(...args: any[]) => any>>> {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
@@ -587,7 +582,7 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
     // Return a caller that fakes the environment context as RSC (server)
     return async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" }, resolve }, code, id);
+      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
   }
 
   afterEach(() => {
@@ -606,10 +601,10 @@ describe("vinext:optimize-imports transform", () => {
     const result = await call(code, "/app/component.tsx");
     expect(result).not.toBeNull();
     expect(result!.code).toContain(
-      `import * as Slot from ${JSON.stringify(toSlash(path.join(tmpDir, "node_modules/@radix-ui/react-slot/index.js")))}`,
+      `import * as Slot from ${JSON.stringify("\0vinext:optimized-import:" + JSON.stringify([toSlash(path.join(tmpDir, "node_modules/lucide-react/index.js")), "@radix-ui/react-slot"]))}`,
     );
     expect(result!.code).toContain(
-      `import * as Dialog from ${JSON.stringify(toSlash(path.join(tmpDir, "node_modules/@radix-ui/react-dialog/index.js")))}`,
+      `import * as Dialog from ${JSON.stringify("\0vinext:optimized-import:" + JSON.stringify([toSlash(path.join(tmpDir, "node_modules/lucide-react/index.js")), "@radix-ui/react-dialog"]))}`,
     );
     expect(result!.code).not.toContain(`from "lucide-react"`);
   });
@@ -897,7 +892,15 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "./`);
   });
 
-  it("resolves cross-package exports with each environment's resolver", async () => {
+  it.each([
+    {
+      id: "/resolved/slot.js",
+      meta: { owner: "custom-plugin" },
+      moduleSideEffects: "no-treeshake",
+    },
+    { id: "\0virtual-slot" },
+    { id: "@radix-ui/react-slot", external: true },
+  ])("preserves the full cross-package resolution result (%j)", async (resolved) => {
     await setupTransform("radix-ui", `export * as Slot from "@radix-ui/react-slot";`);
     const plugin = createOptimizeImportsPlugin(
       () => undefined,
@@ -905,32 +908,31 @@ describe("vinext:optimize-imports transform", () => {
     );
     await unwrapHook(plugin.buildStart)!.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
+    const resolveId = unwrapHook(plugin.resolveId)!;
     const barrel = toSlash(path.join(tmpDir, "node_modules/radix-ui/index.js"));
     for (const name of ["rsc", "ssr"]) {
-      const target = toSlash(path.join(tmpDir, `node_modules/@radix-ui/react-slot/${name}.js`));
-      const resolve = vi.fn(async () => ({ id: target }));
       const result = await transform.call(
-        { environment: { name }, resolve },
+        { environment: { name } },
         `import { Slot } from "radix-ui";\nimport { Direct } from "@radix-ui/react-slot";`,
         "/app/page.tsx",
       );
-      expect(resolve).toHaveBeenCalledWith("@radix-ui/react-slot", barrel, { skipSelf: true });
-      expect(result.code).toContain(`import * as Slot from ${JSON.stringify(target)}`);
+      const declaration = parseAst(result.code).body[0];
+      expect(declaration.type).toBe("ImportDeclaration");
+      if (declaration.type !== "ImportDeclaration") throw new Error("Expected import");
+      const source = declaration.source.value;
+      expect(source).toMatch(/^\0vinext:optimized-import:/);
       expect(result.code).toContain(`import { Direct } from "@radix-ui/react-slot"`);
+      const resolve = vi.fn(async () => resolved);
+      const options = { custom: { otherPlugin: true }, isEntry: false };
+      expect(
+        await resolveId.call({ environment: { name }, resolve }, source, "/app/page.tsx", options),
+      ).toBe(resolved);
+      expect(resolve).toHaveBeenCalledWith("@radix-ui/react-slot", barrel, {
+        ...options,
+        skipSelf: true,
+      });
     }
   });
-
-  it.each([null, { id: "@radix-ui/react-slot", external: true }])(
-    "leaves the entire barrel import unchanged when a target cannot be bundled (%j)",
-    async (resolved) => {
-      const call = await setupTransform(
-        "radix-ui",
-        `export { Local } from "./local.js"; export * as Slot from "@radix-ui/react-slot";`,
-        async () => resolved,
-      );
-      expect(await call(`import { Local, Slot } from "radix-ui";`, "/app/page.tsx")).toBeNull();
-    },
-  );
 
   it("prefers react-server export condition in RSC but not in SSR", async () => {
     // Simulates a package (like react-dom) that exposes different barrel entries

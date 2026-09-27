@@ -23,6 +23,9 @@ import { magicStringTransformResult } from "./transform-result.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
+// The leading NUL keeps these private imports out of RSC bare-package probes.
+const OPTIMIZED_IMPORT_PREFIX = "\0vinext:optimized-import:";
+
 /**
  * Read a file's contents, returning null on any error.
  * Module-level so a single function instance is shared across all transform calls.
@@ -638,6 +641,17 @@ export function createOptimizeImportsPlugin(
       exportMapCache.clear();
     },
 
+    resolveId: {
+      filter: { id: /^\0vinext:optimized-import:/ },
+      async handler(id, _importer, options) {
+        const [barrelEntry, source] = JSON.parse(id.slice(OPTIMIZED_IMPORT_PREFIX.length)) as [
+          string,
+          string,
+        ];
+        return this.resolve(source, barrelEntry, { ...options, skipSelf: true });
+      },
+    },
+
     transform: {
       filter: {
         id: {
@@ -764,15 +778,10 @@ export function createOptimizeImportsPlugin(
             if (!entry) continue;
             let resolvedSource = entry.source;
             if (!path.isAbsolute(resolvedSource) && !resolvedSource.startsWith(".")) {
-              // Resolve cross-package re-exports from their barrel's pnpm context
-              // before emitting imports. Redirecting bare imports in resolveId can
-              // recurse with the RSC plugin's own package-resolution probes.
-              const resolved = await this.resolve(resolvedSource, barrelEntry, { skipSelf: true });
-              if (!resolved || resolved.external) {
-                allResolved = false;
-                break;
-              }
-              resolvedSource = resolved.id;
+              // Carry the barrel's resolution context without intercepting unrelated
+              // bare imports or emitting another plugin's already-resolved virtual ID.
+              resolvedSource =
+                OPTIMIZED_IMPORT_PREFIX + JSON.stringify([barrelEntry, entry.source]);
             }
             // Key on both resolved source and isNamespace: a named import and a
             // namespace import from the same sub-module must produce separate
@@ -792,8 +801,6 @@ export function createOptimizeImportsPlugin(
               originalName: entry.isNamespace ? undefined : entry.originalName,
             });
           }
-
-          if (!allResolved) continue;
 
           // Build replacement import statements
           const replacements: string[] = [];

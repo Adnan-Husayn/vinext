@@ -200,7 +200,7 @@ export default function Page() { return <main><Slot.Root>slot-server</Slot.Root>
           name: "bound-barrel-resolution",
           enforce: "pre",
           resolveId(source) {
-            if (source === "@radix-ui/react-slot" && ++resolves > 100) {
+            if (source.startsWith("@radix-ui/") && ++resolves > 100) {
               throw new Error("Cross-package barrel resolution did not converge");
             }
           },
@@ -244,6 +244,63 @@ export default function Page() { return <main><Slot.Root>slot-server</Slot.Root>
     },
     120000,
   );
+
+  it("preserves virtual sub-package resolutions in dev and production", async () => {
+    root = createFixture();
+    fs.writeFileSync(
+      path.join(root, "node_modules", "custom-icons", "index.js"),
+      `export { Button } from "custom-virtual-button";
+export { Unused } from "./unused.js";`,
+    );
+    fs.writeFileSync(
+      path.join(root, "node_modules", "custom-icons", "unused.js"),
+      `import * as React from "react"; export const Unused = React.createContext(null);`,
+    );
+    const virtualButton: Plugin = {
+      name: "virtual-button",
+      resolveId(source) {
+        if (source === "custom-virtual-button") return "\0virtual-button";
+      },
+      load(id) {
+        if (id === "\0virtual-button") {
+          return `export function Button({ label }) { return "virtual-button-" + label; }`;
+        }
+      },
+    };
+    server = await createServer({
+      root,
+      configFile: false,
+      plugins: [...createPlugins(root), virtualButton],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer!.address();
+    if (!address || typeof address !== "object") throw new Error("Missing dev server address");
+    const devResponse = await fetch(`http://localhost:${address.port}/`);
+    expect(devResponse.status).toBe(200);
+    const devHtml = await devResponse.text();
+    expect(devHtml).toContain("virtual-button-server");
+    expect(devHtml).toContain("virtual-button-client");
+    await server.close();
+    server = null;
+
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [...createPlugins(root), virtualButton],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+    const built = (await import(
+      pathToFileURL(path.join(root, "dist", "server", "index.js")).href
+    )) as { default: BuiltHandler };
+    const response = await built.default(new Request("http://localhost/"));
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("virtual-button-server");
+    expect(html).toContain("virtual-button-client");
+  }, 120000);
 
   it("lets Vite resolve extensionless optimized targets in RSC, SSR, and production", async () => {
     root = createFixture();
