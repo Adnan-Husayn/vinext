@@ -3697,6 +3697,97 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             instrumentationClientPath,
           ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
           const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
+          const additionalRscOptimizeIncludes: string[] = [];
+          if (
+            env.command === "serve" &&
+            hasCloudflarePlugin &&
+            nextConfig?.aliases["next-intl/config"] &&
+            !(
+              config.environments?.rsc?.optimizeDeps?.noDiscovery ??
+              config.optimizeDeps?.noDiscovery
+            )
+          ) {
+            // Work around plugin-rsc's root probes discovering next-intl's
+            // dependencies during the first render. Only root-resolvable deps
+            // trigger this; isolated pnpm dependencies need no extra includes.
+            // https://github.com/vitejs/vite-plugin-react/issues/1473
+            const projectRequire = createRequire(path.join(root, "package.json"));
+            const excluded = [
+              ...incomingExclude,
+              ...(config.environments?.rsc?.optimizeDeps?.exclude ?? []),
+            ];
+            for (const id of [
+              "@formatjs/intl-localematcher",
+              "negotiator",
+              "@formatjs/fast-memoize",
+              "intl-messageformat",
+            ]) {
+              if (excluded.includes(id)) continue;
+              try {
+                projectRequire.resolve(id);
+                additionalRscOptimizeIncludes.push(id);
+              } catch {}
+            }
+          }
+          const additionalClientOptimizeIncludes: string[] = [];
+          let hasNextIntl = Boolean(nextConfig?.aliases["next-intl/config"]);
+          if (env.command === "serve" && !hasNextIntl) {
+            // pnpm's NODE_PATH can make unrelated workspace packages resolvable.
+            // Config-free apps must declare next-intl before adding its includes.
+            try {
+              const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+              hasNextIntl = [
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+              ].some((field) => Object.hasOwn(pkg[field] ?? {}, "next-intl"));
+            } catch {}
+          }
+          if (
+            env.command === "serve" &&
+            hasNextIntl &&
+            !(
+              config.environments?.client?.optimizeDeps?.noDiscovery ??
+              config.optimizeDeps?.noDiscovery
+            )
+          ) {
+            const excluded = [
+              ...incomingExclude,
+              ...(config.environments?.client?.optimizeDeps?.exclude ?? []),
+            ];
+            // RSC exposes next-intl's private provider and Link modules as raw
+            // client references. Prebundle use-intl's available entry points so these
+            // references share the same context as optimized application imports.
+            try {
+              const projectRequire = createRequire(path.join(root, "package.json"));
+              const packageRequire = createRequire(projectRequire.resolve("next-intl"));
+              for (const id of [
+                "use-intl",
+                "use-intl/react",
+                // next-intl 3.x uses private provider and locale-hook exports.
+                "use-intl/_IntlProvider",
+                "use-intl/_useLocale",
+              ]) {
+                const include = `next-intl > ${id}`;
+                if (
+                  excluded.includes("use-intl") ||
+                  excluded.includes(id) ||
+                  excluded.includes(include)
+                )
+                  continue;
+                try {
+                  packageRequire.resolve(id);
+                  additionalClientOptimizeIncludes.push(include);
+                } catch {}
+              }
+              // The private Link reference also imports next/link on hydration.
+              // Discover it before the browser starts to avoid reloading React.
+              if (!excluded.includes("next") && !excluded.includes("next/link")) {
+                additionalClientOptimizeIncludes.push("next/link");
+              }
+            } catch {}
+          }
           const appClientInput: Record<string, string> = { index: VIRTUAL_APP_BROWSER_ENTRY };
           if (hasPagesDir) {
             appClientInput["vinext-client-entry"] = VIRTUAL_CLIENT_ENTRY;
@@ -3746,7 +3837,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // static.edge import, which it rewrites to this package specifier.
                 // Prebundle both so they share the large development renderer
                 // instead of transforming its raw CJS source on the first request.
-                include: [...new Set([...incomingInclude, "react-server-dom-webpack/static.edge"])],
+                include: [
+                  ...new Set([
+                    ...incomingInclude,
+                    ...additionalRscOptimizeIncludes,
+                    "react-server-dom-webpack/static.edge",
+                  ]),
+                ],
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -3859,6 +3956,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 include: [
                   ...new Set([
                     ...incomingInclude,
+                    ...additionalClientOptimizeIncludes,
                     "react",
                     "react-dom",
                     "react-dom/client",
