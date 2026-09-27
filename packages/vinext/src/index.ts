@@ -3934,16 +3934,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // imports to leak to Node's native ESM loader (ERR_UNSUPPORTED_ESM_URL_SCHEME).
               consumer: "client",
               optimizeDeps: {
-                // Server externalization does not apply to the browser: excluding
-                // these packages hoists optional requires out of their try/catch.
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
-                // app/ contains server files whose imports may have Node-only
-                // exports. Let Vite discover page dependencies from actual client
-                // requests; only browser instrumentation is a safe eager entry.
-                entries: instrumentationClientPath
-                  ? [toRelativeFileEntry(root, instrumentationClientPath)]
-                  : [],
-                // Seed React to avoid late discovery on the first request (#25).
+                // Exclude server-external packages from the client dep optimizer.
+                // These packages are server-only by design (listed in next.config's
+                // `serverExternalPackages`). If the client optimizer crawls into
+                // them through app/ entries, it will use browser export conditions
+                // and pick the wrong conditional export (e.g. `file-type` exports
+                // `fileTypeFromFile` only from its `node` condition via `index.js`,
+                // but the browser optimizer resolves to `core.js` which lacks it,
+                // causing MISSING_EXPORT build failures).
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextServerExternal,
+                ),
+                // Crawl app/ source files up front so client-only deps imported
+                // by user components are discovered during startup instead of
+                // triggering a late re-optimisation + full page reload.
+                entries: optimizeEntries,
+                // React packages aren't crawled from app/ source files,
+                // so must be pre-included to avoid late discovery (#25).
                 include: [
                   ...new Set([
                     ...incomingInclude,
@@ -3955,8 +3964,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     "react/jsx-dev-runtime",
                   ]),
                 ],
-                // Client instrumentation and user-supplied entries may use JSX
-                // in .js files, just like server optimizer entries.
+                // The client scanner also crawls app/ source files, so it
+                // needs the same JSX-in-`.js` handling (moduleTypes/loader) as
+                // the server optimizers. See getDepOptimizeNodeEnvOptions.
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
