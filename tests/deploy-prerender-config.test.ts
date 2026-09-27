@@ -476,7 +476,7 @@ describe("deploy prerender config wiring", () => {
 
   it.each([
     { warmCdnTarget: undefined, certify: false, promote: false },
-    { warmCdnTarget: "https://override.example.com", certify: false, promote: false },
+    { warmCdnTarget: "https://override.example.com/", certify: false, promote: false },
     { warmCdnTarget: undefined, certify: true, promote: false },
     { warmCdnTarget: undefined, certify: true, promote: true },
   ])(
@@ -531,7 +531,7 @@ describe("deploy prerender config wiring", () => {
         expect.objectContaining({
           candidatePathsOnly: true,
           pathDiscoveryTarget: expect.objectContaining({
-            baseUrl: warmCdnTarget ?? "https://vinext.dev",
+            baseUrl: warmCdnTarget ? new URL(warmCdnTarget).origin : "https://vinext.dev",
           }),
         }),
       );
