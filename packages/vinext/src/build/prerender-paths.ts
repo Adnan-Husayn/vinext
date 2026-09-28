@@ -29,7 +29,14 @@ import {
   extractMiddlewareMatcherConfig,
   hasRuntimeExportedName,
 } from "./report.js";
-import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
+import {
+  buildUrlFromParams,
+  layoutOnlyParamSets,
+  resolveParentParams,
+  routeStaticParamSets,
+  validateDiscoveredParams,
+  type StaticParamsMap,
+} from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { loadMdxEsmReader } from "../utils/mdx-scan.js";
@@ -249,64 +256,12 @@ function validatePagesStaticPathsResult(
   };
 }
 
-type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
-
 function hasUnsafeRawUrlPathCharacter(value: string): boolean {
   for (let index = 0; index < value.length; index++) {
     const code = value.charCodeAt(index);
     if (code === 92 || code <= 31 || code === 127) return true;
   }
   return false;
-}
-
-function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
-  return pattern
-    .split("/")
-    .filter((segment) => segment.startsWith(":"))
-    .map((segment) => ({
-      name: segment.slice(1, segment.endsWith("+") || segment.endsWith("*") ? -1 : undefined),
-      optional: segment.endsWith("*"),
-      repeat: segment.endsWith("+") || segment.endsWith("*"),
-    }));
-}
-
-function validateDiscoveredParams(
-  value: unknown,
-  pattern: string,
-  source: "generateStaticParams" | "getStaticPaths",
-): Record<string, string | string[]> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${source} must return parameter objects for ${pattern}.`);
-  }
-
-  const params = { ...(value as Record<string, unknown>) };
-  for (const { name, optional, repeat } of getDynamicPatternParams(pattern)) {
-    const hasValue = Object.prototype.hasOwnProperty.call(params, name);
-    let paramValue = params[name];
-    if (
-      optional &&
-      hasValue &&
-      (paramValue === null || paramValue === undefined || paramValue === false)
-    ) {
-      paramValue = [];
-      params[name] = paramValue;
-    }
-    const valid = repeat
-      ? Array.isArray(paramValue) && paramValue.every((entry) => typeof entry === "string")
-      : typeof paramValue === "string";
-    if (!valid) {
-      throw new Error(
-        `Parameter ${name} from ${source} for ${pattern} must be ${repeat ? "an array of strings" : "a string"}.`,
-      );
-    }
-    const values = Array.isArray(paramValue) ? paramValue : [paramValue];
-    if (values.some((entry) => entry === "." || entry === "..")) {
-      throw new Error(
-        `Parameter ${name} from ${source} for ${pattern} must not contain dot path segments.`,
-      );
-    }
-  }
-  return params as Record<string, string | string[]>;
 }
 
 function validatePagesStaticPathsEntry(entry: StaticPathsEntry, pattern: string): StaticPathsEntry {
@@ -875,7 +830,10 @@ async function collectAppPaths(options: {
     get(_target, pattern: string) {
       return async ({ params }: { params: Record<string, string | string[]> }) => {
         if (!options.baseUrl) return null;
-        const cacheKey = `${pattern}\0${JSON.stringify(params)}`;
+        // Under Cache Components every empty result is rejected below, so a
+        // composed resolver must not pass parents through one.
+        const rejectEmptyResults = requireNonEmptyStaticParams;
+        const cacheKey = `${pattern}\0${JSON.stringify(params)}\0${rejectEmptyResults}`;
         let request = staticParamsCache.get(cacheKey);
         if (request === undefined) {
           request = (async () => {
@@ -883,6 +841,7 @@ async function collectAppPaths(options: {
             if (Object.keys(params).length > 0) {
               search.set("parentParams", JSON.stringify(params));
             }
+            if (rejectEmptyResults) search.set("rejectEmptyResults", "1");
             const text = await fetchDiscoveryEndpoint(
               `${options.baseUrl}/__vinext/prerender/static-params?${search}`,
               options.secretHeaders,
@@ -910,7 +869,7 @@ async function collectAppPaths(options: {
           staticParamsCache.set(cacheKey, request);
         }
         const value = await request;
-        if (requireNonEmptyStaticParams && value?.length === 0) {
+        if (rejectEmptyResults && value?.length === 0) {
           throw new Error(
             "When using Cache Components, all `generateStaticParams` functions must return at least one result. " +
               "This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.\n\n" +
@@ -942,9 +901,8 @@ async function collectAppPaths(options: {
     }
     // Next.js's build lists paths only for a static or SSG page route, and
     // renders each under the route that generated it. Paths discovered for any
-    // other route, for example through a sibling page's generateStaticParams,
-    // stay warm paths but aren't listed. A cacheComponents build keeps every
-    // page route eligible, as dispatch does.
+    // other route stay warm paths but aren't listed. A cacheComponents build
+    // keeps every page route eligible, as dispatch does.
     const staticEligibility =
       isRouteHandler || options.cacheComponents
         ? "eligible"
@@ -983,25 +941,28 @@ async function collectAppPaths(options: {
         for (const parentParams of parentParamSets) {
           const childResults = await generateStaticParams({ params: parentParams });
           if (childResults === null) {
-            paramSets = null;
+            // The route's own segments have no generateStaticParams, so its
+            // layouts' params stand alone.
+            paramSets = layoutOnlyParamSets(route, parentParamSets);
             break;
           }
           if (Array.isArray(childResults)) {
+            // As for a layout, an empty own result passes the parent set
+            // through (build/static-paths/app.ts generateRouteStaticParams);
+            // routeStaticParamSets below still drops it if incomplete.
+            if (childResults.length === 0) paramSets.push(parentParams);
             for (const childParams of childResults) {
               paramSets.push({ ...parentParams, ...childParams });
             }
           }
         }
+        if (paramSets !== null) paramSets = routeStaticParamSets(route, paramSets);
       } else {
         const results = await generateStaticParams({ params: {} });
-        if (results === null) {
-          const layoutParamSets = await resolveParentParams(route, staticParamsMap, {
-            includeLastDynamicSegment: true,
-          });
-          paramSets = layoutParamSets.length > 0 ? layoutParamSets : null;
-        } else {
-          paramSets = Array.isArray(results) ? results : [];
-        }
+        paramSets =
+          results === null
+            ? null
+            : routeStaticParamSets(route, Array.isArray(results) ? results : []);
       }
 
       if (!paramSets?.length) {
