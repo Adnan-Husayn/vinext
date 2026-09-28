@@ -382,7 +382,7 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "reactStrictMode")?.status).toBe("partial");
   });
 
-  it("detects unsupported webpack config", () => {
+  it("detects partially supported webpack config", () => {
     writeFile(
       "next.config.js",
       `module.exports = {
@@ -392,8 +392,8 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     const webpackItem = items.find((i) => i.name === "webpack");
-    expect(webpackItem?.status).toBe("unsupported");
-    expect(webpackItem?.detail).toContain("Vite replaces webpack");
+    expect(webpackItem?.status).toBe("partial");
+    expect(webpackItem?.detail).toContain("resolve.alias");
   });
 
   it("detects cacheComponents as partially supported", () => {
@@ -482,7 +482,7 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("partial");
   });
 
   it("detects webpack when written as a quoted property key", () => {
@@ -494,7 +494,7 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("partial");
   });
 
   it("detects partial image config", () => {
@@ -506,7 +506,9 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items.find((i) => i.name === "images")?.status).toBe("partial");
+    const images = items.find((i) => i.name === "images");
+    expect(images?.status).toBe("partial");
+    expect(images?.detail).toContain("vinext({ images: { optimizer } })");
   });
 
   it("detects experimental.ppr as unsupported", () => {
@@ -670,8 +672,10 @@ describe("analyzeConfig", () => {
       "experimental.proxyClientMaxBodySize",
       "experimental.externalMiddlewareRewritesResolve",
       "experimental.externalProxyRewritesResolve",
-      "experimental.instrumentationHook",
     ]);
+    expect(items.find((item) => item.name === "experimental.instrumentationHook")?.status).toBe(
+      "supported",
+    );
   });
 
   it("detects allowedDevOrigins as supported", () => {
@@ -768,7 +772,7 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
-    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("partial");
   });
 
   it("detects options through a `satisfies` annotation", () => {
@@ -793,7 +797,7 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
-    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("partial");
   });
 
   it("detects options in a block-body function config (next/constants PHASE_*)", () => {
@@ -829,7 +833,7 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
-    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("partial");
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
   });
 
@@ -851,7 +855,7 @@ describe("analyzeConfig", () => {
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
-    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("partial");
   });
 
   it("detects options across both branches of a ternary function config", () => {
@@ -892,18 +896,98 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
   });
 
+  it("reports next.config options vinext ignores", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        cacheHandler: "./cache-handler.js",
+        cacheHandlers: { default: "./handler.js" },
+        cacheLife: { blog: { revalidate: 60 } },
+        skipTrailingSlashRedirect: true,
+        reactCompiler: true,
+        modularizeImports: {},
+        typedRoutes: true,
+        compiler: { relay: { src: "./" }, styledComponents: true, emotion: true },
+        experimental: { dynamicIO: true, cacheLife: {}, reactCompiler: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const status = (name: string) => items.find((i) => i.name === name)?.status;
+    expect(status("cacheHandler")).toBe("unsupported");
+    expect(status("cacheHandlers")).toBe("unsupported");
+    expect(status("cacheLife")).toBe("unsupported");
+    expect(status("experimental.cacheLife")).toBe("unsupported");
+    expect(status("skipTrailingSlashRedirect")).toBe("unsupported");
+    expect(status("compiler.relay")).toBe("unsupported");
+    expect(status("experimental.dynamicIO")).toBe("unsupported");
+    // Ignored, but the app still works — it only loses an optimization or type check.
+    expect(status("reactCompiler")).toBe("partial");
+    expect(status("experimental.reactCompiler")).toBe("partial");
+    expect(status("modularizeImports")).toBe("partial");
+    expect(status("typedRoutes")).toBe("partial");
+    expect(status("compiler.styledComponents")).toBe("partial");
+    expect(status("compiler.emotion")).toBe("partial");
+    // A parent object without its own entry is not reported.
+    expect(status("compiler")).toBeUndefined();
+  });
+
+  it("reports honoured next.config options that were previously unlisted", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        enablePrerenderSourceMaps: true,
+        serverExternalPackages: ["sharp"],
+        assetPrefix: "https://cdn.example.com",
+        pageExtensions: ["tsx", "mdx"],
+        sassOptions: {},
+        generateBuildId: async () => "build",
+        deploymentId: "dpl_1",
+        cacheMaxMemorySize: 0,
+        reactMaxHeadersLength: 1000,
+        turbopack: { resolveAlias: {} },
+        instrumentationClientInject: ["./lib/rum.ts"],
+        compiler: { removeConsole: true, define: {} },
+        experimental: {
+          optimizePackageImports: ["my-lib"],
+          staleTimes: { dynamic: 30 },
+          turbo: { resolveAlias: {} },
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const status = (name: string) => items.find((i) => i.name === name)?.status;
+    expect(status("enablePrerenderSourceMaps")).toBe("supported");
+    expect(status("serverExternalPackages")).toBe("supported");
+    expect(status("assetPrefix")).toBe("supported");
+    expect(status("pageExtensions")).toBe("supported");
+    expect(status("sassOptions")).toBe("supported");
+    expect(status("generateBuildId")).toBe("supported");
+    expect(status("deploymentId")).toBe("supported");
+    expect(status("compiler.removeConsole")).toBe("supported");
+    expect(status("cacheMaxMemorySize")).toBe("supported");
+    expect(status("reactMaxHeadersLength")).toBe("supported");
+    expect(status("turbopack")).toBe("partial");
+    expect(status("experimental.turbo")).toBe("partial");
+    expect(status("instrumentationClientInject")).toBe("supported");
+    expect(status("compiler.define")).toBe("supported");
+    expect(status("experimental.staleTimes")).toBe("supported");
+    expect(status("experimental.optimizePackageImports")).toBe("supported");
+  });
+
   it("sorts unsupported configs first", () => {
     writeFile(
       "next.config.mjs",
       `export default {
         basePath: "/app",
-        webpack: (config) => config,
+        cacheHandler: "./cache-handler.js",
         images: { domains: [] },
       };`,
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items[0].status).toBe("unsupported"); // webpack
+    expect(items[0].status).toBe("unsupported"); // cacheHandler
     expect(items[items.length - 1].status).toBe("supported"); // basePath
   });
 });
