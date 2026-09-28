@@ -168,7 +168,7 @@ describe("response-stage cacheability", () => {
       async (context) => {
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
         return new Response(body, { headers: { "Cache-Control": "no-store" } });
       },
@@ -261,7 +261,7 @@ describe("response-stage cacheability", () => {
         markRenderStarted();
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response(body);
       },
     ).finally(() => {
@@ -296,7 +296,7 @@ describe("response-stage cacheability", () => {
       async (context) => {
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/client-page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response("rendered");
       },
     );
@@ -343,7 +343,7 @@ describe("response-stage cacheability", () => {
           routePathname: "/target",
         });
         state.route = { kind: "app-page", pattern: "/target" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response("static");
       },
     );
@@ -422,6 +422,14 @@ describe("response-stage cacheability", () => {
         isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
         readCacheControl: (headers) =>
           headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        // Naming the header lets core attribute config's policy, which waives
+        // the App page's searchParams proof.
+        readCacheControlHeaderName: (headers) =>
+          headers.has("X-Example-Edge-Policy")
+            ? "X-Example-Edge-Policy"
+            : headers.has("Cache-Control")
+              ? "Cache-Control"
+              : null,
         hasExplicitNonCacheablePolicy: () => false,
       },
     });
