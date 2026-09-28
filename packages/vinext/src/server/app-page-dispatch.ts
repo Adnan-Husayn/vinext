@@ -364,8 +364,10 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   interceptionContext: string | null;
   isEdgeRuntime?: boolean;
   /**
-   * Whether the page or its nearest layout sets `runtime = "edge"`, which
-   * disables static generation. Parallel slots do not count.
+   * Whether the route's loader tree resolves `runtime = "edge"` (or
+   * `"experimental-edge"`), which disables static generation outside
+   * `cacheComponents`. Every parallel branch merges at each node, as
+   * in Next.js's Turbopack build (`collectAppPageStaticGenerationRuntimes`).
    */
   isStaticGenerationEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
