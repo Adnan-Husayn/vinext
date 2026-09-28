@@ -50,11 +50,11 @@ describe("scanImports", () => {
   });
 
   it("detects partial imports", () => {
-    writeFile("app/page.tsx", `import { GoogleFont } from "next/font/google";`);
+    writeFile("app/page.tsx", `import { useOffline } from "next/offline";`);
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
-    expect(items[0].name).toBe("next/font/google");
+    expect(items[0].name).toBe("next/offline");
     expect(items[0].status).toBe("partial");
   });
 
@@ -66,6 +66,37 @@ describe("scanImports", () => {
     expect(items[0].name).toBe("next/font/local");
     expect(items[0].status).toBe("supported");
     expect(items[0].detail).toContain("className and variable modes both work");
+  });
+
+  it("reports next/font/google as self-hosted", () => {
+    writeFile("app/layout.tsx", `import { Inter } from "next/font/google";`);
+
+    const items = scanImports(tmpDir);
+    expect(items[0].status).toBe("supported");
+    expect(items[0].detail).toContain("self-hosted");
+  });
+
+  it("reports next/config as partial (runtime config is not populated)", () => {
+    writeFile("pages/index.tsx", `import getConfig from "next/config";`);
+
+    const items = scanImports(tmpDir);
+    expect(items[0].status).toBe("partial");
+    expect(items[0].detail).toContain("publicRuntimeConfig");
+  });
+
+  it("recognizes next/root-params and its dist path", () => {
+    writeFile("app/[lang]/page.tsx", `import { lang } from "next/root-params";`);
+    writeFile(
+      "lib/root.ts",
+      `import { getRootParam } from "next/dist/server/request/root-params";`,
+    );
+
+    const items = scanImports(tmpDir);
+    expect(items.map((i) => i.name).sort()).toEqual([
+      "next/dist/server/request/root-params",
+      "next/root-params",
+    ]);
+    expect(items.every((i) => i.status === "supported")).toBe(true);
   });
 
   it("detects unsupported imports", () => {
@@ -142,7 +173,7 @@ describe("scanImports", () => {
   });
 
   it("recognizes next/web-vitals as supported", () => {
-    writeFile("pages/_app.tsx", `import { reportWebVitals } from "next/web-vitals";`);
+    writeFile("pages/_app.tsx", `import { useReportWebVitals } from "next/web-vitals";`);
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
@@ -195,7 +226,7 @@ describe("scanImports", () => {
       "app/page.tsx",
       `
       import Link from "next/link";
-      import { GoogleFont } from "next/font/google";
+      import { useOffline } from "next/offline";
       import { useAmp } from "next/amp";
     `,
     );
@@ -923,7 +954,7 @@ describe("checkLibraries", () => {
     expect(items.every((i) => i.status === "unsupported")).toBe(true);
   });
 
-  it("detects @clerk/nextjs as partial", () => {
+  it("detects @clerk/nextjs as supported", () => {
     writeFile(
       "package.json",
       JSON.stringify({
@@ -933,8 +964,21 @@ describe("checkLibraries", () => {
 
     const items = checkLibraries(tmpDir);
     expect(items).toHaveLength(1);
-    expect(items[0].status).toBe("partial");
+    expect(items[0].status).toBe("supported");
     expect(items[0].detail).toContain("clerkMiddleware");
+  });
+
+  it("reports next-intl and @sentry/nextjs as partial", () => {
+    writeFile(
+      "package.json",
+      JSON.stringify({
+        dependencies: { "next-intl": "^4.0.0", "@sentry/nextjs": "^10.0.0" },
+      }),
+    );
+
+    const items = checkLibraries(tmpDir);
+    expect(items.find((i) => i.name === "next-intl")?.status).toBe("partial");
+    expect(items.find((i) => i.name === "@sentry/nextjs")?.status).toBe("partial");
   });
 
   it("detects supported CSS-in-JS libraries", () => {
@@ -973,14 +1017,13 @@ describe("checkLibraries", () => {
         dependencies: {
           tailwindcss: "^3.0.0",
           "next-auth": "^4.0.0",
-          "@sentry/nextjs": "^7.0.0",
+          "next-intl": "^4.0.0",
         },
       }),
     );
 
     const items = checkLibraries(tmpDir);
-    expect(items[0].status).toBe("unsupported");
-    expect(items[items.length - 1].status).toBe("supported");
+    expect(items.map((i) => i.status)).toEqual(["unsupported", "partial", "supported"]);
   });
 });
 
@@ -1972,12 +2015,12 @@ describe("runCheck", () => {
   });
 
   it("calculates score correctly — partial items count 50%", () => {
-    // 1 supported import (next/link) + 1 partial import (next/font/google) + no-config (supported) + 2 conventions (App Router + 1 page)
+    // 1 supported import (next/link) + 1 partial import (next/offline) + no-config (supported) + 2 conventions (App Router + 1 page)
     writeFile(
       "app/page.tsx",
       `
       import Link from "next/link";
-      import { GoogleFont } from "next/font/google";
+      import { useOffline } from "next/offline";
     `,
     );
 
@@ -2052,7 +2095,7 @@ describe("formatReport", () => {
       "app/page.tsx",
       `
       import Link from "next/link";
-      import { GoogleFont } from "next/font/google";
+      import { useOffline } from "next/offline";
     `,
     );
     writeFile(
@@ -2107,14 +2150,14 @@ describe("formatReport", () => {
   });
 
   it("shows partial support section when there are partial items", () => {
-    writeFile("app/page.tsx", `import { GoogleFont } from "next/font/google";`);
+    writeFile("app/page.tsx", `import { useOffline } from "next/offline";`);
     writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
 
     expect(report).toContain("Partial support");
-    expect(report).toContain("next/font/google");
+    expect(report).toContain("next/offline");
   });
 
   it("does not show issues section when everything is supported", () => {
