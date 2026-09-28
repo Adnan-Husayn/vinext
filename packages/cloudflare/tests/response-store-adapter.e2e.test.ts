@@ -64,6 +64,59 @@ async function metadataEntries(): Promise<unknown[][]> {
   );
 }
 
+type StoredResponseEntry = {
+  activeRevision?: unknown;
+  freshUntil?: unknown;
+  objectKey?: unknown;
+  responseHeaders?: unknown;
+  revalidator?: { id?: unknown };
+};
+
+// The stored App page responses whose metadata names the path.
+async function responseEntries(pathname: string): Promise<StoredResponseEntry[]> {
+  return ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+    (entry) =>
+      entry.revalidator?.id === "vinext:response" && JSON.stringify(entry).includes(pathname),
+  );
+}
+
+// Every stored metadata entry that names the path, whatever its revalidator,
+// so an absence check also catches a malformed entry.
+async function storedEntriesNaming(pathname: string): Promise<unknown[]> {
+  return (await metadataEntries())
+    .flat()
+    .filter((entry) => JSON.stringify(entry).includes(pathname));
+}
+
+// Whether the R2 body backing each entry holds the entry's active revision.
+// The store publishes metadata before it uploads the body, and reads MISS
+// until the upload lands.
+async function bodiesStored(entries: StoredResponseEntry[]): Promise<boolean> {
+  const bucket = await miniflare.getR2Bucket("CACHE_BODIES", "cache");
+  const stored = await Promise.all(
+    entries.map(async (entry) => {
+      assert.equal(typeof entry.objectKey, "string", JSON.stringify(entry));
+      const object = await bucket.head(entry.objectKey as string);
+      return object?.customMetadata?.latestRevision === String(entry.activeRevision);
+    }),
+  );
+  return stored.every(Boolean);
+}
+
+// Writes run in waitUntil after the response returns, so poll for them, then
+// fail unless exactly `count` entries were published and each body is readable.
+async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
+  let entries = await responseEntries(pathname);
+  let stored = entries.length >= count && (await bodiesStored(entries));
+  for (let attempt = 0; attempt < 50 && !stored; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    entries = await responseEntries(pathname);
+    stored = entries.length >= count && (await bodiesStored(entries));
+  }
+  assert.equal(entries.length, count, JSON.stringify(entries));
+  assert.ok(stored, `R2 bodies not stored for ${JSON.stringify(entries)}`);
+}
+
 beforeEach(async () => {
   workerVersionId = crypto.randomUUID();
   const compatibility = {
@@ -247,6 +300,113 @@ describe("Cloudflare Workers Response Store adapter", () => {
     for (const entry of routeEntries) {
       assert.doesNotMatch(entry, new RegExp(`${firstQuery}|${secondQuery}`));
     }
+  });
+
+  test("serves a request without a query from the entries a canary query filled", async () => {
+    const pathname = "/static-default";
+    const canary = crypto.randomUUID();
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const html = await request(`${pathname}?canary=${canary}`);
+    await html.text();
+    const rsc = await request(`${pathname}.rsc?canary=${canary}&_rsc=`, rscInit);
+    await rsc.arrayBuffer();
+    assert.equal(html.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(rsc.status, 200);
+    await waitForResponseEntries(pathname, 2);
+
+    const queryless = await request(pathname);
+    const querylessBody = await queryless.text();
+    const querylessRsc = await request(`${pathname}.rsc?_rsc=`, rscInit);
+    const storedRscBody = await querylessRsc.text();
+    assert.equal(queryless.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(querylessRsc.headers.get("x-vinext-cache"), "HIT");
+    // Each request gets its own representation, not the other's stored entry.
+    assert.match(queryless.headers.get("content-type") ?? "", /^text\/html/);
+    assert.match(querylessRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+    assert.doesNotMatch(querylessBody, new RegExp(canary));
+    assert.doesNotMatch(storedRscBody, new RegExp(canary));
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), new RegExp(canary));
+  });
+
+  test("never stores an on-demand generateStaticParams path whose render reads cookies()", async () => {
+    // The listed path renders statically and is stored.
+    assert.equal((await cacheStatus("/generated-cookies/listed")).status, "MISS");
+    await waitForResponseEntries("/generated-cookies/listed", 1);
+    assert.equal((await cacheStatus("/generated-cookies/listed")).status, "HIT");
+    // An unlisted path that skips cookies() is stored too, so the bailout
+    // below comes from the cookie read, not from the path being unlisted.
+    const staticUnlisted = "/generated-cookies/static-unlisted";
+    const staticMiss = await cacheStatus(staticUnlisted);
+    assert.equal(staticMiss.status, "MISS");
+    await waitForResponseEntries(staticUnlisted, 1);
+    const staticHit = await cacheStatus(staticUnlisted);
+    assert.equal(staticHit.status, "HIT");
+    assert.equal(
+      htmlValue(staticHit.body, "generated-cookies-render-id"),
+      htmlValue(staticMiss.body, "generated-cookies-render-id"),
+    );
+
+    const pathname = "/generated-cookies/on-demand";
+    const first = await request(pathname);
+    const firstBody = await first.text();
+    const second = await request(pathname);
+    const secondBody = await second.text();
+    const rsc = await request(`${pathname}.rsc?_rsc=`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    await rsc.text();
+    // A Flight response, so this exercises the RSC render and its cache write.
+    assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
+
+    for (const response of [first, second, rsc]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+      assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    }
+    // The dynamic page, rendered per request.
+    assert.notEqual(
+      htmlValue(firstBody, "generated-cookies-render-id"),
+      htmlValue(secondBody, "generated-cookies-render-id"),
+    );
+    // Writes run in waitUntil after the response returns, so hold the absence
+    // through the same window the other tests poll for a publication, checking
+    // after every delay, including the last.
+    assert.deepEqual(await storedEntriesNaming(pathname), []);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(await storedEntriesNaming(pathname), []);
+    }
+    // Two publication polls and the absence window, 2.5s each, plus requests.
+  }, 15_000);
+
+  test("keeps a page whose cacheLife revalidates after 60 seconds fresh for 60 seconds", async () => {
+    const pathname = "/cache-life";
+    const requestedAt = Date.now();
+    const first = await cacheStatus(pathname);
+    await waitForResponseEntries(pathname, 1);
+    const hit = await request(pathname);
+    const hitBody = await hit.text();
+    const [entry, ...otherEntries] = await responseEntries(pathname);
+    const checkedAt = Date.now();
+
+    assert.equal(first.status, "MISS");
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(
+      htmlValue(hitBody, "cache-life-render-id"),
+      htmlValue(first.body, "cache-life-render-id"),
+    );
+    // Browsers revalidate every reuse; the Response Store owns freshness.
+    assert.equal(hit.headers.get("cache-control"), "private, max-age=0, must-revalidate");
+    assert.ok(entry, "missing the stored /cache-life entry");
+    assert.equal(otherEntries.length, 0);
+    // The entry's policy is the page's s-maxage=60, scoped to the edge.
+    const headers = new Headers(entry.responseHeaders as [string, string][]);
+    assert.match(headers.get("cloudflare-cdn-cache-control") ?? "", /^public, max-age=60(,|$)/);
+    const freshUntil = Number(entry.freshUntil);
+    assert.ok(
+      freshUntil >= requestedAt + 59_000 && freshUntil <= checkedAt + 61_000,
+      `fresh for ${freshUntil - requestedAt}ms after the request`,
+    );
   });
 
   test("keeps the query out of a static page that reads useSearchParams() inside Suspense", async () => {
