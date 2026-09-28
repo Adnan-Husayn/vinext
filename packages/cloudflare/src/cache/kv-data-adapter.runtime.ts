@@ -35,7 +35,7 @@ import {
 } from "vinext/shims/request-context";
 import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
-import { createKvKeySpace, type KvKeySpace } from "./kv-key.js";
+import { createKvKeySpace, resolveKvExpirationTtlSeconds, type KvKeySpace } from "./kv-key.js";
 
 export { ENTRY_PREFIX } from "./kv-key.js";
 
@@ -219,7 +219,7 @@ export class KVCacheHandler implements CacheHandler {
     this.kv = kvNamespace;
     this.keySpace = createKvKeySpace(options?.appPrefix);
     this.ctx = options?.ctx;
-    this.ttlSeconds = options?.ttlSeconds ?? 30 * 24 * 3600;
+    this.ttlSeconds = resolveKvExpirationTtlSeconds(options?.ttlSeconds);
     this._tagCacheTtl = options?.tagCacheTtlMs ?? 5_000;
     const entryCacheTtl = options?.entryCacheTtlSeconds;
     this._entryReadOptions =
@@ -471,8 +471,8 @@ export class KVCacheHandler implements CacheHandler {
     if (effectiveRevalidate === 0) return Promise.resolve();
 
     const now = Date.now();
-    // `revalidate = false` never goes stale, so it gets no revalidateAt and,
-    // below, no KV TTL: the entry stays until it is invalidated.
+    // `revalidate = false` never goes stale, so it gets no revalidateAt. It
+    // still gets the KV TTL below, like every entry.
     const revalidateAt =
       typeof effectiveRevalidate === "number" &&
       effectiveRevalidate > 0 &&
@@ -522,7 +522,9 @@ export class KVCacheHandler implements CacheHandler {
     // Background regen overwrites the key with a fresh entry + new revalidateAt,
     // so active pages always have something to serve. Entries only disappear after
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
-    const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
+    // Every entry gets it, including `revalidate = false` and entries with no
+    // policy.
+    const expirationTtl = this.ttlSeconds;
 
     // Store tags in KV metadata so revalidateByPathPrefix can discover them
     // via kv.list() without fetching entry values. Cloudflare KV limits
@@ -542,8 +544,9 @@ export class KVCacheHandler implements CacheHandler {
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
     // Store invalidation timestamp for each tag. Markers never expire: an
-    // entry with no TTL (`revalidate = false`) must not outlive the marker that
-    // invalidated it. Newer entries pass the marker by `lastModified`.
+    // entry can outlive any marker TTL, for example one written under a longer
+    // `ttlSeconds` before a config change. Newer entries pass the marker by
+    // `lastModified`, and there is one small marker per revalidated tag.
     await Promise.all(validTags.map((tag) => this.kv.put(this._tagKey(tag), String(now))));
     const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
