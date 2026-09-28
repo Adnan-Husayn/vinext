@@ -492,6 +492,15 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
   });
 
+  it("drops nested keys that a later property replaces", () => {
+    writeFile(
+      "next.config.mjs",
+      `const shared = { experimental: { ppr: true } };\nexport default { ...shared, experimental: {} };`,
+    );
+
+    expect(analyzeConfig(tmpDir).find((i) => i.name === "experimental.ppr")).toBeUndefined();
+  });
+
   // Mirrors Next.js: test/e2e/app-dir/app-shells
   it("detects experimental.appShells as partial (config recognized, behavior not implemented)", () => {
     writeFile(
@@ -1016,7 +1025,7 @@ describe("checkConventions", () => {
     writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
 
     const items = checkConventions(tmpDir);
-    const mw = items.find((i) => i.name.includes("middleware.ts"));
+    const mw = items.find((i) => i.name.includes("middleware.js"));
     expect(mw?.status).toBe("supported");
     expect(mw?.name).toContain("deprecated");
   });
@@ -1031,15 +1040,270 @@ describe("checkConventions", () => {
     expect(proxy?.name).toContain("Next.js 16");
   });
 
-  it("prefers proxy.ts over middleware.ts in check", () => {
+  it("flags having both proxy.ts and middleware.ts", () => {
     writeFile("proxy.ts", `export default function proxy() {}`);
     writeFile("middleware.ts", `export function middleware() {}`);
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
 
     const items = checkConventions(tmpDir);
-    // Should show proxy.ts, not middleware.ts
-    expect(items.find((i) => i.name.includes("proxy.ts"))).toBeDefined();
-    expect(items.find((i) => i.name.includes("middleware.ts"))).toBeUndefined();
+    const both = items.find((i) => i.name === "Both middleware.ts and proxy.ts");
+    expect(both?.status).toBe("unsupported");
+    expect(items.filter((i) => i.name.includes("proxy.ts"))).toHaveLength(1);
+  });
+
+  it("flags having both proxy and middleware in src/", () => {
+    writeFile("src/proxy.ts", `export default function proxy() {}`);
+    writeFile("src/middleware.ts", `export function middleware() {}`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const both = items.find((i) => i.name === "Both src/middleware.ts and src/proxy.ts");
+    expect(both?.status).toBe("unsupported");
+  });
+
+  it("looks for proxy at the root when pages/ is at the root and app/ is in src/", () => {
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "proxy.ts (Next.js 16)")).toBeDefined();
+    // vinext uses the root as its base, so src/app is not loaded.
+    expect(items.find((i) => i.name === "src/app/ is ignored")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name.startsWith("App Router"))).toBeUndefined();
+  });
+
+  it("reads pageExtensions through TS wrappers and ignores partly dynamic lists", () => {
+    writeFile(
+      "next.config.ts",
+      `const exts = ["page.tsx"] as const;\nexport default { pageExtensions: exts };`,
+    );
+    writeFile("pages/index.page.tsx", `export default function Home() { return null; }`);
+    writeFile("pages/Button.tsx", `export function Button() { return null; }`);
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+
+    // A list with a non-literal element is not half-read: vinext's defaults apply.
+    writeFile(
+      "next.config.ts",
+      `const extra = "mdx";\nexport default { pageExtensions: ["page.tsx", extra] };`,
+    );
+    expect(checkConventions(tmpDir).find((i) => i.name === "2 page(s)")).toBeDefined();
+  });
+
+  it("uses the default extensions when pageExtensions differs between phases", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default (phase) => phase === "phase-production-build"\n  ? { pageExtensions: ["page.tsx"] }\n  : { pageExtensions: ["mdx"] };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
+    writeFile("pages/docs.mdx", `# Docs`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Pages Router (pages/)")?.detail).toContain(
+      "pageExtensions in next.config can't be read statically or differs between phases",
+    );
+  });
+
+  it("uses the default extensions when an unresolved spread may override pageExtensions", () => {
+    writeFile(
+      "next.config.mjs",
+      `import shared from "./shared.mjs";\nexport default { pageExtensions: ["mdx"], ...shared };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("uses the default extensions when vinext({ nextConfig }) replaces next.config", () => {
+    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
+    writeFile(
+      "vite.config.ts",
+      `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["tsx"] } })] };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("doesn't claim a proxy/middleware conflict when pageExtensions can't be read", () => {
+    writeFile(
+      "next.config.mjs",
+      `import { ext } from "./exts.mjs";\nexport default { pageExtensions: ["mdx", ext] };`,
+    );
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("middleware.js", `export default function middleware() {}`);
+    writeFile("pages/index.mdx", `# Home`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name.startsWith("Both"))).toBeUndefined();
+  });
+
+  it("doesn't claim a proxy/middleware conflict when pageExtensions differs between phases", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default (phase) => phase === "phase-production-build"\n  ? { pageExtensions: ["prod.ts"] }\n  : { pageExtensions: ["dev.ts"] };`,
+    );
+    writeFile("pages/index.prod.ts", `export default function Home() { return null; }`);
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("middleware.js", `export default function middleware() {}`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name.startsWith("Both"))).toBeUndefined();
+  });
+
+  it("reads pageExtensions from a spread of a static object", () => {
+    writeFile(
+      "next.config.mjs",
+      `const routes = { pageExtensions: ["mdx"] };\nexport default { ...routes };`,
+    );
+    writeFile("pages/index.mdx", `# Home`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it.each([
+    `export default { plugins: [vinext({ appDir: "src" })] };`,
+    `export default { plugins: [vinext({ disableAppRouter: true })] };`,
+    `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["mdx"] } })] };`,
+  ])("notes vinext() routing options instead of evaluating them: %s", (viteConfig) => {
+    writeFile("vite.config.ts", viteConfig);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "Pages Router (pages/)")?.detail).toContain(
+      "vinext() routing options",
+    );
+    // The options may select src/app/, so it isn't reported as ignored.
+    expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
+  });
+
+  it("notes vinext() routing options when no router directory is found", () => {
+    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "../routes" })] };`);
+
+    const item = checkConventions(tmpDir).find((i) => i.name.startsWith("No pages/"));
+    expect(item?.detail).toContain("vinext() routing options");
+  });
+
+  it.runIf(process.platform !== "win32")("scans route files under a symlinked src/", () => {
+    writeFile("real-src/app/page.tsx", `export default function Home() { return <div/>; }`);
+    fs.symlinkSync(path.join(tmpDir, "real-src"), path.join(tmpDir, "src"));
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
+    expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("resolves conventions with custom pageExtensions from next.config", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default { pageExtensions: ["page.tsx", "api.ts", "mdx"] };`,
+    );
+    writeFile("pages/_app.page.tsx", `export default function App() { return null; }`);
+    writeFile("pages/index.page.tsx", `export default function Home() { return null; }`);
+    writeFile("pages/docs.mdx", `# Docs`);
+    writeFile("pages/components/Button.tsx", `export function Button() { return null; }`);
+    writeFile("proxy.api.ts", `export default function proxy() {}`);
+
+    const items = checkConventions(tmpDir);
+    // Button.tsx doesn't match pageExtensions, so it's not a page.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Custom _app")).toBeDefined();
+    expect(items.find((i) => i.name === "proxy.api.ts (Next.js 16)")).toBeDefined();
+  });
+
+  it("detects proxy and middleware in src/ for src-layout projects", () => {
+    writeFile("src/proxy.tsx", `export default function proxy() {}`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "src/proxy.tsx (Next.js 16)")?.status).toBe("supported");
+  });
+
+  it("ignores a root middleware.ts in src-layout projects", () => {
+    // vinext (like Next.js) only loads middleware from src/ when app/ lives there.
+    writeFile("middleware.ts", `export function middleware() {}`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name.includes("middleware"))).toBeUndefined();
+  });
+
+  it("matches Pages Router special files relative to pages/, not the project path", () => {
+    // A project directory named like a special file must not skew the counts.
+    const root = path.join(tmpDir, "apps/api/my_app");
+    const write = (rel: string) => {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), `export default function P() { return null; }`);
+    };
+    write("pages/index.tsx");
+    write("pages/snap_app.tsx");
+    write("pages/api/hello.ts");
+
+    const items = checkConventions(root);
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "1 API route(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
+  });
+
+  it("skips api and reserved directories at any depth, like the Pages Router", () => {
+    writeFile("pages/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_app.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_app/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_error/index.tsx", `export default function P() { return null; }`);
+
+    const items = checkConventions(tmpDir);
+    // index.tsx and admin/_app.tsx; files inside nested _app/ and _error/ dirs are never loaded.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+  });
+
+  it("only treats root-level _app/_document files as custom", () => {
+    writeFile("pages/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_app.tsx", `export default function P() { return null; }`);
+    writeFile("pages/_document/index.tsx", `export default function P() { return null; }`);
+
+    const items = checkConventions(tmpDir);
+    // pages/admin/_app.tsx is an ordinary page; a pages/_document/ directory is not loaded.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
+    expect(items.find((i) => i.name === "Custom _document")).toBeUndefined();
+  });
+
+  it("counts root pages whose name only starts with a reserved name", () => {
+    writeFile("pages/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/_app.admin.tsx", `export default function P() { return null; }`);
+
+    const items = checkConventions(tmpDir);
+    // The Pages Router strips only the page extension, so `_app.admin` is an ordinary page.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
+  });
+
+  it("does not label a root app/ as src/app/ when the project lives under a src directory", () => {
+    const root = path.join(tmpDir, "src/app-web");
+    fs.mkdirSync(path.join(root, "app"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "app/page.tsx"),
+      `export default function P() { return null; }`,
+    );
+
+    const items = checkConventions(root);
+    expect(items.find((i) => i.name === "App Router (app/)")).toBeDefined();
+  });
+
+  it("counts App Router conventions by exact file name for every page extension", () => {
+    writeFile("app/page.js", `export default function P() { return null; }`);
+    writeFile("app/loading.js", `export default function L() { return null; }`);
+    writeFile("app/error.jsx", `"use client"; export default function E() { return null; }`);
+    writeFile("app/global-error.tsx", `"use client"; export default function G() { return null; }`);
+    writeFile("app/homepage.tsx", `export default function H() { return null; }`);
+    writeFile("app/_components/page.tsx", `export default function C() { return null; }`);
+    writeFile("app/api/route.js", `export function GET() {}`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "1 loading boundary(ies)")).toBeDefined();
+    expect(items.find((i) => i.name === "1 error boundary(ies)")).toBeDefined();
+    expect(items.find((i) => i.name === "1 route handler(s)")).toBeDefined();
   });
 
   it("detects src/app directory when app/ is not at root", () => {
@@ -1192,15 +1456,14 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.includes("1 route handler"))).toBeDefined();
   });
 
-  it("flags missing type:module in package.json", () => {
+  it("does not flag missing type:module in package.json", () => {
+    // Not a Next.js compatibility issue: vinext init adds it, and the manual
+    // next steps list it.
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
 
     const items = checkConventions(tmpDir);
-    const typeModule = items.find((i) => i.name.includes('"type": "module"'));
-    expect(typeModule).toBeDefined();
-    expect(typeModule?.status).toBe("unsupported");
-    expect(typeModule?.detail).toContain("vinext init");
+    expect(items.find((i) => i.name.includes('"type": "module"'))).toBeUndefined();
   });
 
   it("does not flag type:module when present", () => {
@@ -1247,8 +1510,71 @@ describe("checkConventions", () => {
     const items = checkConventions(tmpDir);
     const postcss = items.find((i) => i.name.includes("PostCSS"));
     expect(postcss).toBeDefined();
-    expect(postcss?.status).toBe("partial");
+    expect(postcss?.status).toBe("supported");
     expect(postcss?.detail).toContain("string-form");
+  });
+
+  it("reports string-form plugins in a function-exported PostCSS config as partial", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("postcss.config.mjs", `export default () => ({ plugins: ["autoprefixer"] });`);
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+  });
+
+  it.each([
+    [
+      "a function exported through a variable",
+      `const config = () => ({ plugins: ["autoprefixer"] });\nexport default config;`,
+      "partial",
+    ],
+    [
+      "an object exported through a variable",
+      `const config = { plugins: ["@tailwindcss/postcss"] };\nexport default config;`,
+      "supported",
+    ],
+    [
+      "a frozen object",
+      `const config = { plugins: ["@tailwindcss/postcss"] };\nObject.freeze(config);\nexport default config;`,
+      "supported",
+    ],
+    [
+      "an object that is modified after it's declared",
+      `const config = { plugins: ["autoprefixer"] };\nconfig.parser = "postcss-scss";\nexport default config;`,
+      "partial",
+    ],
+    [
+      "an object with options besides plugins",
+      `export default { parser: "postcss-scss", plugins: ["autoprefixer"] };`,
+      "partial",
+    ],
+  ])("classifies string-form plugins in %s", (_, source, status) => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("postcss.config.mjs", source);
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe(status);
+  });
+
+  it("isn't fooled by a commented-out object export in a PostCSS config", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile(
+      "postcss.config.mjs",
+      `const config = () => ({ plugins: ["autoprefixer"] }); // export default {\nexport default config;`,
+    );
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+  });
+
+  it("checks the PostCSS config vinext loads first", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("postcss.config.js", `module.exports = () => ({ plugins: ["autoprefixer"] });`);
+    writeFile("postcss.config.mjs", `export default { plugins: ["@tailwindcss/postcss"] };`);
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.name).toBe("PostCSS string-form plugins (postcss.config.js)");
+    expect(postcss?.status).toBe("partial");
   });
 
   it("does not flag PostCSS when no config exists", () => {
@@ -1268,7 +1594,7 @@ describe("checkConventions", () => {
 
     const items = checkConventions(tmpDir);
     const postcss = items.find((i) => i.name.includes("PostCSS"));
-    expect(postcss?.status).toBe("partial");
+    expect(postcss?.status).toBe("supported");
   });
 
   it("does not flag require()-form PostCSS plugins", () => {
@@ -1297,7 +1623,8 @@ describe("checkConventions", () => {
     const items = checkConventions(tmpDir);
     const elapsed = Date.now() - start;
 
-    // The first element is a bare string, so it is still correctly flagged...
+    // The first element is a bare string, so it is still flagged (partial: the
+    // unterminated config does not parse, so it cannot be confirmed as an object)...
     const postcss = items.find((i) => i.name.includes("PostCSS"));
     expect(postcss?.status).toBe("partial");
     // ...and crucially it returns quickly instead of backtracking for minutes.
@@ -1332,9 +1659,36 @@ describe("checkConventions", () => {
     const cjs = items.find((i) => i.name.includes("__dirname"));
     expect(cjs).toBeDefined();
     expect(cjs?.status).toBe("unsupported");
-    expect(cjs?.detail).toContain("fileURLToPath");
-    expect(cjs?.detail).toContain("import.meta.dirname");
+    expect(cjs?.detail).toContain("server code");
     expect(cjs?.files).toContain("lib/db.ts");
+  });
+
+  it("does not flag __dirname in next.config (the config loader provides it)", () => {
+    writeFile("next.config.js", `module.exports = { sassOptions: { includePaths: [__dirname] } };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name.includes("__dirname"))).toBeUndefined();
+  });
+
+  it.each(["next.config.mjs", "next.config.js"])(
+    "still flags __dirname in an ESM %s (ESM configs get no CJS globals)",
+    (config) => {
+      writeFile(config, `export default { sassOptions: { includePaths: [__dirname] } };`);
+      writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+      const item = checkConventions(tmpDir).find((i) => i.name.includes("__dirname"));
+      expect(item?.status).toBe("unsupported");
+      expect(item?.files).toEqual([config]);
+    },
+  );
+
+  it("detects ESM syntax in next.config.js that doesn't start a line", () => {
+    writeFile("next.config.js", `const dir = __dirname; export default { env: { dir } };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const item = checkConventions(tmpDir).find((i) => i.name.includes("__dirname"));
+    expect(item?.status).toBe("unsupported");
   });
 
   it.each(["app", "src/app", "pages", "src/pages"])(
@@ -1729,16 +2083,27 @@ describe("formatReport", () => {
   });
 
   it("lists affected files under unsupported items in issues section", () => {
-    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
-    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("app/page.tsx", `import { useAmp } from "next/amp";`);
     writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
 
     expect(report).toContain("Issues to address");
-    expect(report).toContain("__dirname");
-    expect(report).toContain("lib/db.ts");
+    expect(report).toContain("app/page.tsx");
+  });
+
+  it("lists affected files under partial items", () => {
+    writeFile("components/Fade.tsx", `import { ViewTransition } from "react";`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("Partial support");
+    expect(report).toContain("ViewTransition");
+    expect(report).toContain("components/Fade.tsx");
   });
 
   it("shows partial support section when there are partial items", () => {
@@ -1805,11 +2170,11 @@ describe("formatReport", () => {
     expect(report).toContain("Recommended next steps");
     expect(report).toContain("vinext init");
     expect(report).toContain("Or manually");
-    expect(report).toContain('"type": "module"');
     expect(report).toContain("@vitejs/plugin-react");
     expect(report).toContain("@vitejs/plugin-rsc");
     expect(report).toContain("react-server-dom-webpack");
-    expect(report).toContain("vite.config.ts");
+    expect(report).toContain('"type": "module"');
+    expect(report).toContain("plugins: [vinext()]");
     expect(report).toContain("npx vite dev");
   });
 
@@ -1823,6 +2188,25 @@ describe("formatReport", () => {
     expect(report).toContain("@vitejs/plugin-react");
     expect(report).not.toContain("@vitejs/plugin-rsc");
     expect(report).not.toContain("react-server-dom-webpack");
+  });
+
+  it("lists App Router packages when vinext() options may select src/app/", () => {
+    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "src" })] };`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div />; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div />; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    expect(formatReport(runCheck(tmpDir))).toContain("@vitejs/plugin-rsc");
+  });
+
+  it("lists App Router packages when an ignored src/app/ still makes vinext load the RSC plugin", () => {
+    writeFile("pages/index.tsx", `export default function Home() { return <div />; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div />; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const report = formatReport(runCheck(tmpDir));
+    expect(report).toContain("@vitejs/plugin-rsc");
+    expect(report).toContain("react-server-dom-webpack");
   });
 });
 

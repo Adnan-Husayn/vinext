@@ -5,7 +5,10 @@
  * showing what will work, what needs changes, and an overall score.
  */
 
-import { detectPackageManager, findDir } from "./utils/project.js";
+import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
+import { normalizePageExtensions } from "./routing/file-matcher.js";
+import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
+import { unwrapExpression } from "./plugins/ast-utils.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import ignore, { type Ignore } from "ignore";
@@ -27,6 +30,8 @@ export type CheckResult = {
   config: CheckItem[];
   libraries: CheckItem[];
   conventions: CheckItem[];
+  /** Whether app/ or src/app/ exists, which makes vinext() register the RSC plugin. */
+  hasAppDir?: boolean;
   summary: {
     supported: number;
     partial: number;
@@ -46,25 +51,26 @@ function compareByStatus(a: { status: Status }, b: { status: Status }): number {
   return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
 }
 
+type AppRouterFileType = "page" | "layout" | "route" | "loading" | "error" | "not-found";
+
 /**
- * App Router file conventions. Each convention lists the extensions that the
- * Next.js docs recognise for that file type — note that the boundary files
- * (loading/error/not-found) only exist as React components, so they don't
- * accept `.ts`/`.js`.
+ * True if `relFile` (relative to the app directory) is an App Router file of
+ * the given convention. Files inside private `_folder` segments are not routes.
+ * `exts` are the dotted `pageExtensions` that vinext resolves conventions with.
  */
-const APP_ROUTER_EXTENSIONS = {
-  page: [".tsx", ".jsx", ".ts", ".js"],
-  layout: [".tsx", ".jsx", ".ts", ".js"],
-  loading: [".tsx", ".jsx"],
-  error: [".tsx", ".jsx"],
-  "not-found": [".tsx", ".jsx"],
-} as const satisfies Record<string, readonly string[]>;
+function isAppRouterFile(relFile: string, type: AppRouterFileType, exts: string[]): boolean {
+  const segments = relFile.split("/");
+  const basename = segments.pop() ?? "";
+  if (segments.some((segment) => segment.startsWith("_"))) return false;
+  return exts.some((ext) => basename === `${type}${ext}`);
+}
 
-type AppRouterFileType = keyof typeof APP_ROUTER_EXTENSIONS;
-
-/** True if `file` is an App Router file of the given convention. */
-function isAppRouterFile(file: string, type: AppRouterFileType): boolean {
-  return APP_ROUTER_EXTENSIONS[type].some((ext) => file.endsWith(`${type}${ext}`));
+/** The first `<name><ext>` file found in `dir` for the given page extensions. */
+function findConventionFile(dir: string, name: string, exts: string[]): string | null {
+  for (const ext of exts) {
+    if (fs.existsSync(path.join(dir, `${name}${ext}`))) return `${name}${ext}`;
+  }
+  return null;
 }
 
 // ── Import support map ─────────────────────────────────────────────────────
@@ -742,6 +748,16 @@ type ConfigKeys = {
   top: Set<string>;
   /** For each object-valued property, its child key names (for `parent.child`). */
   nested: Map<string, Set<string>>;
+  /**
+   * `pageExtensions`, when set to an array of string literals that every phase
+   * branch agrees on.
+   */
+  pageExtensions?: string[];
+  /**
+   * Whether `pageExtensions` can't be read statically (not all literals, maybe
+   * set by an unresolved spread) or differs between phase branches.
+   */
+  pageExtensionsUnresolved?: boolean;
 };
 
 /** The property key name of an object property, or null for spreads/computed keys. */
@@ -766,6 +782,7 @@ function propertyKeyName(prop: ESTree.ObjectExpression["properties"][number]): s
 function collectConfigKeys(source: string): ConfigKeys {
   const top = new Set<string>();
   const nested = new Map<string, Set<string>>();
+  let pageExtensions: string[] | undefined;
 
   let program: ESTree.Program;
   try {
@@ -871,6 +888,31 @@ function collectConfigKeys(source: string): ConfigKeys {
     return [];
   }
 
+  // Resolve a static array of string literals (through variable refs, TS
+  // `as`/`satisfies` and parentheses). Returns undefined unless every element
+  // is a string literal, so a partly dynamic list is never half-read.
+  function resolveStringArray(
+    node: ESTree.Expression | null | undefined,
+    depth = 0,
+  ): string[] | undefined {
+    if (!node || depth > 10) return undefined;
+    if (node.type === "Identifier") return resolveStringArray(vars.get(node.name), depth + 1);
+    if (
+      node.type === "TSAsExpression" ||
+      node.type === "TSSatisfiesExpression" ||
+      node.type === "ParenthesizedExpression"
+    ) {
+      return resolveStringArray(node.expression, depth + 1);
+    }
+    if (node.type !== "ArrayExpression") return undefined;
+    const values: string[] = [];
+    for (const el of node.elements) {
+      if (el?.type !== "Literal" || typeof el.value !== "string") return undefined;
+      values.push(el.value);
+    }
+    return values;
+  }
+
   // Find the exported config object(s): `export default <expr>` or
   // `module.exports = <expr>`.
   let configObjs: ESTree.ObjectExpression[] = [];
@@ -895,32 +937,69 @@ function collectConfigKeys(source: string): ConfigKeys {
   }
 
   // Merge keys across all candidate config objects (multi-phase branches).
+  // A branch without a readable `pageExtensions` uses the defaults.
+  const branchExtensions: (string[] | undefined)[] = [];
+  // Expand spreads of statically known objects (`{ ...shared, … }`) in place,
+  // so later properties still win.
+  const expandSpreads = (
+    obj: ESTree.ObjectExpression,
+    depth = 0,
+  ): ESTree.ObjectExpression["properties"] =>
+    obj.properties.flatMap((prop) => {
+      if (prop.type !== "SpreadElement" || depth > 10) return [prop];
+      const spread = resolveObjects(prop.argument);
+      return spread.length === 1 ? expandSpreads(spread[0], depth + 1) : [prop];
+    });
+  let pageExtensionsUnresolved = false;
   for (const configObj of configObjs) {
-    for (const prop of configObj.properties) {
+    let branchExts: string[] | undefined;
+    let branchUnresolved = false;
+    // Within one object a later property replaces an earlier one (including
+    // one from a spread), so child keys are tracked per branch, then merged.
+    const branchNested = new Map<string, Set<string>>();
+    for (const prop of expandSpreads(configObj)) {
+      // An unresolved spread may set or override `pageExtensions`.
+      if (prop.type === "SpreadElement") {
+        branchExts = undefined;
+        branchUnresolved = true;
+      }
       const name = propertyKeyName(prop);
       if (!name) continue;
       top.add(name);
       // `prop` is a non-spread Property here (propertyKeyName returned a name).
-      const childObjs = resolveObjects((prop as ESTree.ObjectProperty).value);
+      const value = (prop as ESTree.ObjectProperty).value;
+      if (name === "pageExtensions") {
+        branchExts = resolveStringArray(value);
+        branchUnresolved = branchExts === undefined;
+      }
+      branchNested.delete(name);
+      const childObjs = resolveObjects(value);
       if (!childObjs.length) continue;
-      const children = nested.get(name) ?? new Set<string>();
+      const children = new Set<string>();
       for (const childObj of childObjs) {
         for (const childProp of childObj.properties) {
           const childName = propertyKeyName(childProp);
           if (childName) children.add(childName);
         }
       }
-      nested.set(name, children);
+      branchNested.set(name, children);
     }
+    for (const [name, children] of branchNested) {
+      nested.set(name, new Set([...(nested.get(name) ?? []), ...children]));
+    }
+    branchExtensions.push(branchExts);
+    if (branchUnresolved) pageExtensionsUnresolved = true;
+  }
+  if (!pageExtensionsUnresolved && branchExtensions.some(Boolean)) {
+    const sets = branchExtensions.map((e) => normalizePageExtensions(e));
+    if (new Set(sets.map((set) => set.join(","))).size === 1) pageExtensions = sets[0];
+    else pageExtensionsUnresolved = true;
   }
 
-  return { top, nested };
+  return { top, nested, pageExtensions, pageExtensionsUnresolved };
 }
 
-/**
- * Analyze next.config.js/mjs/ts for supported and unsupported options.
- */
-export function analyzeConfig(root: string): CheckItem[] {
+function findNextConfigPath(root: string): string | null {
   // Mirror the Next.js-compatible set in shims/constants.ts. Accepts both
   // `.ts`/`.mts` (Next.js-recognized) and `.cjs`/`.cts` (defensive — Next.js
   // does not, but if a user has them we should still scan and report).
@@ -931,15 +1010,123 @@ export function analyzeConfig(root: string): CheckItem[] {
     "next.config.js",
     "next.config.cjs",
   ];
-  let configPath: string | null = null;
   for (const f of configFiles) {
     const p = path.join(root, f);
-    if (fs.existsSync(p)) {
-      configPath = p;
-      break;
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function readViteConfigSource(root: string): string | null {
+  const viteConfigPath = findViteConfigPath(root);
+  return viteConfigPath ? fs.readFileSync(viteConfigPath, "utf-8") : null;
+}
+
+/**
+ * Whether `rel` is a next.config the loader provides `__dirname`/`__filename`
+ * for: TypeScript configs get them injected, and `.cjs` or CommonJS `.js`
+ * configs are loaded with `require`. An ESM `.js` config gets neither.
+ */
+function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
+  if (/^next\.config\.(?:ts|mts|cjs)$/.test(rel)) return true;
+  if (rel !== "next.config.js") return false;
+  try {
+    return !parseAst(content).body.some(
+      (node) => node.type === "ImportDeclaration" || node.type.startsWith("Export"),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a PostCSS config exports an object literal with only a `plugins` key,
+ * directly or via a variable — the shape vinext's string-plugin resolver keeps
+ * intact (it replaces the config with `{ plugins }`).
+ */
+function exportsPostcssPluginsOnlyObject(content: string): boolean {
+  let program: ESTree.Program;
+  try {
+    program = parseAst(content, { lang: "ts" });
+  } catch {
+    return false;
+  }
+  const vars = new Map<string, ESTree.Expression>();
+  // Bindings modified after their declaration (`config.parser = …`,
+  // `Object.assign(config, …)`), whose initializer isn't the exported shape.
+  const mutated = new Set<string>();
+  let exported: ESTree.Expression | undefined;
+  for (const node of program.body) {
+    if (node.type === "ExpressionStatement") {
+      const expr = node.expression;
+      if (
+        expr.type === "AssignmentExpression" &&
+        expr.left.type === "MemberExpression" &&
+        expr.left.object.type === "Identifier"
+      ) {
+        mutated.add(expr.left.object.name);
+      } else if (
+        expr.type === "CallExpression" &&
+        expr.callee.type === "MemberExpression" &&
+        expr.callee.object.type === "Identifier" &&
+        expr.callee.object.name === "Object" &&
+        expr.callee.property.type === "Identifier" &&
+        ["assign", "defineProperty", "defineProperties"].includes(expr.callee.property.name) &&
+        expr.arguments[0]?.type === "Identifier"
+      ) {
+        mutated.add(expr.arguments[0].name);
+      }
+    }
+    if (node.type === "VariableDeclaration") {
+      for (const decl of node.declarations) {
+        if (decl.id.type === "Identifier" && decl.init) vars.set(decl.id.name, decl.init);
+      }
+    } else if (node.type === "ExportDefaultDeclaration") {
+      if (!node.declaration.type.endsWith("Declaration")) {
+        exported = node.declaration as ESTree.Expression;
+      }
+    } else if (
+      node.type === "ExpressionStatement" &&
+      node.expression.type === "AssignmentExpression" &&
+      node.expression.left.type === "MemberExpression" &&
+      node.expression.left.object.type === "Identifier" &&
+      node.expression.left.object.name === "module" &&
+      node.expression.left.property.type === "Identifier" &&
+      node.expression.left.property.name === "exports"
+    ) {
+      exported = node.expression.right;
     }
   }
+  if (exported === undefined) return false;
+  let value = unwrapExpression(exported) as ESTree.Expression | null;
+  if (value?.type === "Identifier") {
+    if (mutated.has(value.name)) return false;
+    value = unwrapExpression(vars.get(value.name)) as ESTree.Expression | null;
+  }
+  return (
+    value?.type === "ObjectExpression" &&
+    value.properties.every((prop) => propertyKeyName(prop) === "plugins")
+  );
+}
 
+/**
+ * The dotted `pageExtensions` vinext resolves route conventions with, and
+ * whether the configured value is unresolved (then vinext's defaults are used).
+ */
+function readPageExtensions(root: string): { exts: string[]; unresolved: boolean } {
+  const configPath = findNextConfigPath(root);
+  const keys = configPath ? collectConfigKeys(fs.readFileSync(configPath, "utf-8")) : undefined;
+  return {
+    exts: normalizePageExtensions(keys?.pageExtensions).map((ext) => `.${ext}`),
+    unresolved: keys?.pageExtensionsUnresolved ?? false,
+  };
+}
+
+/**
+ * Analyze next.config.js/mjs/ts for supported and unsupported options.
+ */
+export function analyzeConfig(root: string): CheckItem[] {
+  const configPath = findNextConfigPath(root);
   if (!configPath) {
     return [
       {
@@ -1035,72 +1222,139 @@ export function checkLibraries(root: string): CheckItem[] {
  */
 export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
-  const sourceFiles = findSourceFiles(root);
+  // Route conventions resolve against `pageExtensions` (which may add e.g.
+  // `.mdx` or compound `page.tsx`), so scan those alongside source files.
+  // An inline `vinext({ nextConfig })` replaces next.config.* on disk; it isn't
+  // evaluated here, so vinext's default extensions are used.
+  const viteConfigSource = readViteConfigSource(root);
+  const setsInlineNextConfig = viteConfigSource !== null && /\bnextConfig\b/.test(viteConfigSource);
+  const pageExtensionsRead = readPageExtensions(root);
+  const pageExts = setsInlineNextConfig
+    ? normalizePageExtensions(undefined).map((ext) => `.${ext}`)
+    : pageExtensionsRead.exts;
+  const pageExtensionsUnresolved = !setsInlineNextConfig && pageExtensionsRead.unresolved;
+  // With the real extensions unknown, a proxy/middleware conflict can't be claimed.
+  const pageExtensionsUncertain = setsInlineNextConfig || pageExtensionsUnresolved;
+  const scanExts = [...new Set([...SOURCE_EXTENSIONS, ...pageExts])];
+  const sourceFiles = findSourceFiles(root, scanExts);
+  // The project scan doesn't follow symlinks, so rescan a route directory
+  // reached through one (the directory itself or a symlinked src/).
+  const realRoot = fs.realpathSync(root);
+  const isThroughSymlink = (dir: string) =>
+    fs.realpathSync(dir) !== path.join(realRoot, path.relative(root, dir));
   const routeFiles = (dir: string) => {
     const files = sourceFiles.filter((file) => file.startsWith(`${dir}/`));
-    if (files.length || !fs.lstatSync(dir).isSymbolicLink()) return files;
+    if (files.length || !isThroughSymlink(dir)) return files;
     const rules = ancestorGitignoreRules(root, dir);
     if (isGitignored(dir, true, rules)) return [];
-    return findSourceFiles(dir, SOURCE_EXTENSIONS, rules);
+    return findSourceFiles(dir, scanExts, rules);
   };
+  const isPageFile = (file: string) => pageExts.some((ext) => file.endsWith(ext));
 
-  // Check for pages/ and app/ at root level, then fall back to src/
-  const pagesDir = findDir(root, "pages", "src/pages");
-  const appDirPath = findDir(root, "app", "src/app");
+  // Like the plugin's auto-detection, look for app/ and pages/ in a single base
+  // directory: the root when either is there, else src/. proxy/middleware live
+  // in src/ when that is the base, else the root.
+  const srcDir = path.join(root, "src");
+  const usesSrcDir =
+    findDir(root, "app", "pages") === null && findDir(root, "src/app", "src/pages") !== null;
+  const baseDir = usesSrcDir ? srcDir : root;
+  const pagesDir = findDir(baseDir, "pages");
+  const appDirPath = findDir(baseDir, "app");
+  const conventionPrefix = usesSrcDir ? "src/" : "";
+  const conventionDir = usesSrcDir ? srcDir : root;
+  const proxyFile = findConventionFile(conventionDir, "proxy", pageExts);
+  const middlewareFile = findConventionFile(conventionDir, "middleware", pageExts);
 
-  const hasProxy =
-    fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
-  const hasMiddleware =
-    fs.existsSync(path.join(root, "middleware.ts")) ||
-    fs.existsSync(path.join(root, "middleware.js"));
+  // vinext() options in the Vite config can change which directories are used
+  // (appDir, disableAppRouter, an inline nextConfig). They aren't evaluated
+  // here, so note that the layout below assumes vinext's defaults.
+  const routingNotes: string[] = [];
+  const customizesRouting =
+    viteConfigSource !== null &&
+    /\b(?:appDir|disableAppRouter|nextConfig)\b/.test(viteConfigSource);
+  if (customizesRouting) {
+    routingNotes.push(
+      "vite.config passes vinext() routing options (appDir / disableAppRouter / nextConfig), which this check doesn't evaluate — detected with vinext's defaults",
+    );
+  }
+  if (pageExtensionsUnresolved) {
+    routingNotes.push(
+      "pageExtensions in next.config can't be read statically or differs between phases — files counted with vinext's default extensions",
+    );
+  }
+  const routingDetail = routingNotes.length ? routingNotes.join("; ") : undefined;
+
+  // Only flag an ignored src/ directory when vinext's defaults apply.
+  if (!customizesRouting && !usesSrcDir) {
+    for (const dir of ["app", "pages"]) {
+      if (findDir(root, dir) === null && findDir(root, `src/${dir}`) !== null) {
+        items.push({
+          name: `src/${dir}/ is ignored`,
+          status: "unsupported",
+          detail: `vinext looks for app/ and pages/ in one directory (the project root here) — move src/${dir}/ to ${dir}/`,
+        });
+      }
+    }
+  }
 
   if (pagesDir !== null) {
-    const isSrc = pagesDir.includes("src/pages");
     items.push({
-      name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
+      name: `Pages Router (${path.relative(root, pagesDir)}/)`,
       status: "supported",
+      ...(routingDetail && { detail: routingDetail }),
     });
 
-    // Count pages
-    const pageFiles = routeFiles(pagesDir);
-    const pages = pageFiles.filter(
-      (f) =>
-        !f.includes("/api/") &&
-        !f.includes("_app") &&
-        !f.includes("_document") &&
-        !f.includes("_error"),
-    );
-    const apiRoutes = pageFiles.filter((f) => f.includes("/api/"));
+    // Count pages the way the Pages Router scans them: directories named `api`,
+    // `_app`, `_document` or `_error` are skipped at any depth, and the
+    // `_app`/`_document`/`_error` files are only special at the pages root.
+    // API routes are the files under `pages/api/`.
+    const reserved = new Set(["_app", "_document", "_error"]);
+    const pageFiles = routeFiles(pagesDir)
+      .filter(isPageFile)
+      .map((f) => path.relative(pagesDir, f));
+    // Like the Pages Router, strip the longest matching page extension.
+    const stripPageExt = (file: string) => {
+      const ext = pageExts
+        .filter((e) => file.endsWith(e))
+        .reduce((a, b) => (b.length > a.length ? b : a), "");
+      return file.slice(0, file.length - ext.length);
+    };
+    const isCustom = (name: string) => pageFiles.some((f) => stripPageExt(f) === name);
+    const apiRoutes = pageFiles.filter((f) => f.startsWith("api/"));
+    const pages = pageFiles.filter((f) => {
+      const segments = f.split("/");
+      const basename = segments.pop() ?? "";
+      if (segments.some((dir) => dir === "api" || reserved.has(dir))) return false;
+      return segments.length > 0 || !reserved.has(stripPageExt(basename));
+    });
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
     if (apiRoutes.length) {
       items.push({ name: `${apiRoutes.length} API route(s)`, status: "supported" });
     }
 
     // Check for _app, _document
-    if (pageFiles.some((f) => f.includes("_app"))) {
+    if (isCustom("_app")) {
       items.push({ name: "Custom _app", status: "supported" });
     }
-    if (pageFiles.some((f) => f.includes("_document"))) {
+    if (isCustom("_document")) {
       items.push({ name: "Custom _document", status: "supported" });
     }
   }
 
   if (appDirPath !== null) {
-    const isSrc = appDirPath.includes("src/app");
     items.push({
-      name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
+      name: `App Router (${path.relative(root, appDirPath)}/)`,
       status: "supported",
+      ...(routingDetail && { detail: routingDetail }),
     });
 
-    const appFiles = routeFiles(appDirPath);
-    const pages = appFiles.filter((f) => isAppRouterFile(f, "page"));
-    const layouts = appFiles.filter((f) => isAppRouterFile(f, "layout"));
-    const routes = appFiles.filter(
-      (f) => f.endsWith("route.tsx") || f.endsWith("route.ts") || f.endsWith("route.js"),
-    );
-    const loadings = appFiles.filter((f) => isAppRouterFile(f, "loading"));
-    const errors = appFiles.filter((f) => isAppRouterFile(f, "error"));
-    const notFounds = appFiles.filter((f) => isAppRouterFile(f, "not-found"));
+    const appFiles = routeFiles(appDirPath).map((f) => path.relative(appDirPath, f));
+    const pages = appFiles.filter((f) => isAppRouterFile(f, "page", pageExts));
+    const layouts = appFiles.filter((f) => isAppRouterFile(f, "layout", pageExts));
+    const routes = appFiles.filter((f) => isAppRouterFile(f, "route", pageExts));
+    const loadings = appFiles.filter((f) => isAppRouterFile(f, "loading", pageExts));
+    const errors = appFiles.filter((f) => isAppRouterFile(f, "error", pageExts));
+    const notFounds = appFiles.filter((f) => isAppRouterFile(f, "not-found", pageExts));
 
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
     if (layouts.length) items.push({ name: `${layouts.length} layout(s)`, status: "supported" });
@@ -1114,31 +1368,27 @@ export function checkConventions(root: string): CheckItem[] {
       items.push({ name: `${notFounds.length} not-found page(s)`, status: "supported" });
   }
 
-  if (hasProxy) {
-    items.push({ name: "proxy.ts (Next.js 16)", status: "supported" });
-  } else if (hasMiddleware) {
-    items.push({ name: "middleware.ts (deprecated in Next.js 16)", status: "supported" });
+  if (proxyFile && middlewareFile && !pageExtensionsUncertain) {
+    items.push({
+      name: `Both ${conventionPrefix}${middlewareFile} and ${conventionPrefix}${proxyFile}`,
+      status: "unsupported",
+      detail: `only one is allowed — keep ${conventionPrefix}${proxyFile} and remove ${conventionPrefix}${middlewareFile}`,
+    });
+  } else if (proxyFile) {
+    items.push({ name: `${conventionPrefix}${proxyFile} (Next.js 16)`, status: "supported" });
+  } else if (middlewareFile) {
+    items.push({
+      name: `${conventionPrefix}${middlewareFile} (deprecated in Next.js 16)`,
+      status: "supported",
+    });
   }
 
   if (pagesDir === null && appDirPath === null) {
     items.push({
       name: "No pages/ or app/ directory found",
       status: "unsupported",
-      detail: "vinext requires a pages/ or app/ directory",
+      detail: ["vinext requires a pages/ or app/ directory", ...routingNotes].join("; "),
     });
-  }
-
-  // Check for "type": "module" in package.json
-  const pkgPath = path.join(root, "package.json");
-  if (fs.existsSync(pkgPath)) {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-    if (pkg.type !== "module") {
-      items.push({
-        name: 'Missing "type": "module" in package.json',
-        status: "unsupported",
-        detail: "required for Vite — vinext init will add it automatically",
-      });
-    }
   }
 
   // Scan all source files once for per-file checks:
@@ -1147,8 +1397,11 @@ export function checkConventions(root: string): CheckItem[] {
   //
   // For __dirname/__filename we use hasFreeCjsGlobal(), a single-pass scanner that
   // skips string literals, template literals, and comments before testing for the
-  // identifier, so tokens inside those contexts are never matched.
-  const runtimeSourceFiles = sourceFiles.filter(isRuntimeSourceFile);
+  // identifier, so tokens inside those contexts are never matched. TypeScript and
+  // CommonJS next.config files are skipped: the config loader provides these globals.
+  const runtimeSourceFiles = sourceFiles.filter(
+    (file) => isRuntimeSourceFile(file) && SOURCE_EXTENSIONS.some((ext) => file.endsWith(ext)),
+  );
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];
@@ -1160,7 +1413,7 @@ export function checkConventions(root: string): CheckItem[] {
       viewTransitionFiles.push(rel);
     }
 
-    if (hasFreeCjsGlobal(content)) {
+    if (hasFreeCjsGlobal(content) && !isNextConfigWithCjsGlobals(rel, content)) {
       cjsGlobalFiles.push(rel);
     }
   }
@@ -1174,9 +1427,8 @@ export function checkConventions(root: string): CheckItem[] {
     });
   }
 
-  // Check PostCSS config for string-form plugins
-  const postcssConfigs = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"];
-  for (const configFile of postcssConfigs) {
+  // Check PostCSS config for string-form plugins, in the order vinext loads them
+  for (const configFile of POSTCSS_CONFIG_FILES) {
     const configPath = path.join(root, configFile);
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf-8");
@@ -1196,12 +1448,24 @@ export function checkConventions(root: string): CheckItem[] {
       // quote. (It also won't see a string preceded by a `/* comment */`, which is
       // not worth handling.)
       const stringPluginRegex = /plugins\s*:\s*\[\s*['"]/;
+      // vinext resolves string plugins by replacing the config with `{ plugins }`,
+      // so only a plugins-only object config works fully; a function export is
+      // left to Vite, and other options (parser, syntax, map) are dropped.
       if (stringPluginRegex.test(content)) {
-        items.push({
-          name: `PostCSS string-form plugins (${configFile})`,
-          status: "partial",
-          detail: "string-form PostCSS plugins need resolution — vinext handles this automatically",
-        });
+        items.push(
+          !exportsPostcssPluginsOnlyObject(content)
+            ? {
+                name: `PostCSS string-form plugins (${configFile})`,
+                status: "partial",
+                detail:
+                  "vinext resolves string-form plugins only in a config that exports a plain { plugins } object — function exports aren't resolved and other options are dropped",
+              }
+            : {
+                name: `PostCSS string-form plugins (${configFile})`,
+                status: "supported",
+                detail: "string-form PostCSS plugins are resolved automatically by vinext",
+              },
+        );
       }
       break; // Only check the first config file found
     }
@@ -1212,7 +1476,7 @@ export function checkConventions(root: string): CheckItem[] {
       name: "__dirname / __filename (CommonJS globals)",
       status: "unsupported",
       detail:
-        "CJS globals unavailable in ESM — use fileURLToPath(import.meta.url) / dirname(...), or import.meta.dirname / import.meta.filename (Node 22+)",
+        "vinext only defines them in server code, where they point at the built output rather than your source tree; they are undefined in client bundles and ESM next.config files — use import.meta.dirname / import.meta.filename or fileURLToPath(import.meta.url)",
       files: cjsGlobalFiles,
     });
   }
@@ -1242,6 +1506,7 @@ export function runCheck(root: string): CheckResult {
     config,
     libraries,
     conventions,
+    hasAppDir: findDir(root, "app", "src/app") !== null,
     summary: { supported, partial, unsupported, total, score },
   };
 }
@@ -1251,9 +1516,7 @@ export function runCheck(root: string): CheckResult {
  */
 export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
   const lines: string[] = [];
-  const hasAppRouter = result.conventions.some(
-    (item) => item.name === "App Router (app/)" || item.name === "App Router (src/app/)",
-  );
+  const hasAppRouter = result.hasAppDir === true;
   const statusIcon = (s: Status) =>
     s === "supported"
       ? "\x1b[32m✓\x1b[0m"
@@ -1357,6 +1620,9 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     for (const item of allItems) {
       if (item.status === "partial") {
         lines.push(`    \x1b[33m~\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
+        for (const f of item.files ?? []) {
+          lines.push(`       \x1b[90m${f}\x1b[0m`);
+        }
       }
     }
   }
@@ -1372,7 +1638,7 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     lines.push(
       `    2. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-react${hasAppRouter ? " @vitejs/plugin-rsc react-server-dom-webpack" : ""}\x1b[0m`,
     );
-    lines.push(`    3. Create vite.config.ts (see docs)`);
+    lines.push(`    3. Create vite.config.ts with \x1b[36mplugins: [vinext()]\x1b[0m`);
     lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);
   }
 
