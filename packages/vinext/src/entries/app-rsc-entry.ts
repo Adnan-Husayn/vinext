@@ -461,6 +461,7 @@ function __isMetadataPath(pathname) {
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
 const __requestHandler = createAppRscRequestHandler({
+  assetPrefix: __assetPrefix,
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   cacheabilityRequestProjection: __cacheabilityRequestProjection,
@@ -1282,6 +1283,7 @@ ${rootParamNameEntries.join("\n")}
 __setPagesClientAssets(__pagesClientAssets);
 function __VINEXT_ACTION_OWNERS() { return ${actionOwners === undefined ? "__vinextActionOwners" : safeJsonStringify(actionOwners)}; }
 ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandler = createAppRscHandler({"}
+  assetPrefix: __assetPrefix,
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,

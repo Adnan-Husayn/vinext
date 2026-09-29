@@ -1605,6 +1605,7 @@ describe("App Router entry templates", () => {
       'import { createAppRscHandler } from "vinext/server/app-rsc-combined-handler";',
     );
     expect(code).toContain("const __appRscHandler = createAppRscHandler({");
+    expect(code).toContain("assetPrefix: __assetPrefix,");
     expect(code).toContain("export default __appRscHandler;");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });

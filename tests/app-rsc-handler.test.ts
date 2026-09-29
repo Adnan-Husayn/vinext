@@ -160,6 +160,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
   const route = createPageRoute();
 
   return createAppRscHandler<TestRoute>({
+    assetPrefix: overrides.assetPrefix,
     basePath: "/docs",
     buildId: overrides.buildId ?? "build-id",
     cacheabilityRequestProjection: overrides.cacheabilityRequestProjection,
@@ -283,6 +284,59 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  // Ported from Next.js: test/e2e/invalid-static-asset-404-app
+  // https://github.com/vercel/next.js/tree/canary/test/e2e/invalid-static-asset-404-app
+  it.each(["", "/assets", "https://cdn.example.test/assets"])(
+    "returns static misses before rendering not-found with assetPrefix %s",
+    async (assetPrefix) => {
+      const renderNotFound = vi.fn(async () => {
+        throw new Error("the custom not-found page must not render for an asset miss");
+      });
+      const handler = createHandler({ assetPrefix, renderNotFound });
+      const prefix = assetPrefix ? "/assets" : "";
+      const response = await handler(
+        new Request(`https://example.test${prefix || "/docs"}/_next/static/missing.js`),
+        null,
+      );
+      expect(response.status).toBe(404);
+      expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+      expect(response.headers.get("cache-control")).toContain("no-store");
+      expect(await response.text()).toBe("Not Found");
+      expect(renderNotFound).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "classifies the unmatched destination of %s rewrites",
+    async (phase) => {
+      const handler = createHandler({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [],
+          [phase]: [
+            { source: "/_next/static/to-page", destination: "/missing-page" },
+            { source: "/to-asset", destination: "/_next/static/missing.js" },
+          ],
+        },
+        renderNotFound: async () =>
+          new Response("custom not found", {
+            status: 404,
+            headers: { "content-type": "text/html" },
+          }),
+      });
+      const page = await handler(
+        new Request("https://example.test/docs/_next/static/to-page"),
+        null,
+      );
+      expect(page.headers.get("content-type")).toBe("text/html");
+      expect(await page.text()).toBe("custom not found");
+      const asset = await handler(new Request("https://example.test/docs/to-asset"), null);
+      expect(asset.status).toBe(404);
+      expect(await asset.text()).toBe("Not Found");
+    },
+  );
+
   it("traces direct App route misses through the internal /404 render", async () => {
     const handler = createHandler({
       renderNotFound: async () => new Response("not found", { status: 404 }),

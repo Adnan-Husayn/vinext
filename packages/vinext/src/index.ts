@@ -199,7 +199,12 @@ import {
 } from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
-import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
+import {
+  ASSET_PREFIX_URL_DIR,
+  resolveAssetsDir,
+  assetPrefixPathname,
+  isNextStaticPath,
+} from "./utils/asset-prefix.js";
 import {
   assertNoPublicDirAssetConflict,
   assertNoPublicNextRequestConflict,
@@ -322,7 +327,10 @@ import {
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
-import { methodNotAllowedResponse } from "./server/http-error-responses.js";
+import {
+  methodNotAllowedResponse,
+  notFoundStaticAssetResponse,
+} from "./server/http-error-responses.js";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
@@ -6563,6 +6571,11 @@ export const loadServerActionClient = ${
                 !isDataReq &&
                 !filePathMatchesRewrite &&
                 !filePathMatchesPagesRoute &&
+                !isNextStaticPath(
+                  pathname,
+                  "",
+                  assetPrefixPathname(nextConfig?.assetPrefix ?? ""),
+                ) &&
                 !isExistingPublicMutation
               ) {
                 return next();
@@ -6704,6 +6717,7 @@ export const loadServerActionClient = ${
               ): "static" | "server" | "none" => classifyDevPageFile(route.filePath);
 
               const pipelineDeps: PagesPipelineDeps = {
+                assetPrefix: nextConfig?.assetPrefix,
                 basePath: bp,
                 trailingSlash: nextConfig?.trailingSlash ?? false,
                 i18nConfig: nextConfig?.i18n ?? null,
@@ -6974,6 +6988,21 @@ export const loadServerActionClient = ${
                   ) {
                     return next();
                   }
+                }
+                // Hybrid requests have already been handed to App routing above.
+                // Only an unmatched resolved static path gets the canonical 404.
+                if (
+                  !renderMatch &&
+                  isNextStaticPath(
+                    resolvedPathname,
+                    "",
+                    assetPrefixPathname(nextConfig?.assetPrefix ?? ""),
+                  )
+                ) {
+                  const headers = new Headers();
+                  forEachStagedHeader((key, value) => headers.append(key, value));
+                  await writeWebResponseToNodeRes(res, notFoundStaticAssetResponse(headers));
+                  return;
                 }
                 if (!cachedSSRHandler || cachedSSRHandler.routes !== routes) {
                   cachedSSRHandler = {
