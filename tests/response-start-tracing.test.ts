@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createResponseStartSpanDescriptor,
   traceCachedResponseStart,
@@ -21,6 +21,11 @@ import {
   hasPostConfigLinkHeaders,
   markEdgeRouteHandlerLinkHeaders,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+
+// Byte streams only use BYOB reads on workerd.
+vi.hoisted(() => {
+  vi.stubGlobal("navigator", { userAgent: "Cloudflare-Workers" });
+});
 
 type RecordedSpan = ResolvedFrameworkSpanDescriptor & { parentType?: string };
 
@@ -130,6 +135,31 @@ describe("response start tracing", () => {
       expect.objectContaining({ type: "NextNodeServer.startResponse" }),
     );
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("body");
+  });
+
+  it("reads byte-stream bodies in chunks of up to 64 KiB on workerd", async () => {
+    recordedSpans.length = 0;
+    const response = traceResponseStart(
+      new Response(
+        new ReadableStream({
+          type: "bytes",
+          start(controller) {
+            for (let i = 0; i < 40; i++) controller.enqueue(new Uint8Array(4096).fill(i));
+            controller.close();
+          },
+        }),
+      ),
+    );
+    const reader = response.body!.getReader();
+    const sizes: number[] = [];
+    for (let result = await reader.read(); !result.done; result = await reader.read()) {
+      sizes.push(result.value.byteLength);
+    }
+
+    expect(sizes).toEqual([65536, 65536, 32768]);
+    expect(
+      recordedSpans.filter(({ type }) => type === "NextNodeServer.startResponse"),
+    ).toHaveLength(1);
   });
 
   it.each(["HIT", "STALE", "REVALIDATED", "UPDATING"])(

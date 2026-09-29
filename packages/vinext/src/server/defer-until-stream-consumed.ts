@@ -1,5 +1,10 @@
+import { getByteStreamReader } from "./byte-stream-reader.js";
+
 /**
  * Defers cleanup until the downstream consumer drains or cancels the stream.
+ *
+ * The wrapper reads the source directly rather than piping it through an
+ * intermediate TransformStream, so each chunk crosses one JS stream layer.
  */
 export function deferUntilStreamConsumed(
   stream: ReadableStream<Uint8Array>,
@@ -14,18 +19,13 @@ export function deferUntilStreamConsumed(
     }
   };
 
-  const cleanup = new TransformStream<Uint8Array, Uint8Array>({
-    flush() {
-      once();
-    },
-  });
-
-  const reader = stream.pipeThrough(cleanup).getReader();
+  const reader = getByteStreamReader(stream);
   return new ReadableStream<Uint8Array>({
     pull(controller) {
       return reader.read().then(
         ({ done, value }) => {
           if (done) {
+            once();
             controller.close();
           } else {
             controller.enqueue(value);

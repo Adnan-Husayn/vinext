@@ -1,5 +1,6 @@
 import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
 import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
+import { getByteStreamReader } from "./byte-stream-reader.js";
 import { frameworkTracer } from "./tracer.js";
 
 const tracedResponses = new WeakMap<Response, Promise<void>>();
@@ -19,7 +20,7 @@ function traceResponseStartStream(
   stream: ReadableStream<Uint8Array>,
   onSettled: () => void,
 ): ReadableStream<Uint8Array> {
-  const reader = stream.getReader();
+  const reader = getByteStreamReader(stream);
   const runInTraceContext = frameworkTracer.captureActiveContext();
   let started = false;
 
