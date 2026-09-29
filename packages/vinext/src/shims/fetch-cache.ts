@@ -1234,6 +1234,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
       return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
     }
 
+    const tags = encodeCacheTags(nextOpts?.tags ?? []);
+
     // Determine revalidation period
     let revalidateSeconds: number;
     if (cacheDirective === "force-cache") {
@@ -1251,7 +1253,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // During prerender, a fetch without an explicit cache lifetime inherits
       // the active route's revalidate value in Next.js. Tags make this fetch
       // cacheable, but do not independently make it cache indefinitely.
-      if (nextOpts?.tags && nextOpts.tags.length > 0) {
+      if (tags.length > 0) {
         const routeRevalidate = _getState().currentFetchRevalidate;
         if (routeRevalidate === 0) {
           const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -1296,7 +1298,6 @@ function createPatchedFetch(): typeof globalThis.fetch {
       recordFiniteFetchRevalidate(nextOpts.revalidate);
     }
     const reqTags = _getState().currentRequestTags;
-    const tags = encodeCacheTags(nextOpts?.tags ?? []);
     if (tags.length > 0) {
       for (const tag of tags) {
         if (!reqTags.includes(tag)) {

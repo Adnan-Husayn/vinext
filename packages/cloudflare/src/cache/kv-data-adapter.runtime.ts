@@ -102,9 +102,6 @@ type KVCacheEntry = {
 /** Prefix used by revalidatePath for path-based tags. */
 const PATH_TAG_PREFIX = "_N_T_";
 
-/** Max tag length to prevent KV key abuse. */
-const MAX_TAG_LENGTH = 256;
-
 /** The runtime rejects a lower `cacheTtl` with "Cache TTL must be at least 30". */
 const MIN_KV_CACHE_TTL_SECONDS = 30;
 
@@ -116,16 +113,16 @@ const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 
 /**
  * Validate a cache tag. Returns null if invalid.
- * Note: `:` is rejected because TAG_PREFIX and ENTRY_PREFIX use `:` as a
- * separator — allowing `:` in user tags could cause ambiguous key lookups.
+ * Tags may already be header-encoded, so their length is not the raw API tag
+ * length. The key builder bounds KV keys and safely handles colon tags.
  */
 function validateTag(tag: string): string | null {
-  if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_LENGTH) return null;
-  // Block control characters and reserved separators used in our own key format.
+  if (typeof tag !== "string" || tag.length === 0) return null;
+  // Block control characters and backslashes.
   // Slash is allowed because revalidatePath() relies on pathname tags like
   // "/posts/hello" and "_N_T_/posts/hello".
   // oxlint-disable-next-line no-control-regex -- intentional: reject control chars in tags
-  if (/[\x00-\x1f\\:]/.test(tag)) return null;
+  if (/[\x00-\x1f\\]/.test(tag)) return null;
   return tag;
 }
 

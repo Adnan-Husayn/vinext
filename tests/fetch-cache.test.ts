@@ -823,6 +823,22 @@ describe("fetch cache shim", () => {
 
   // ── Tag-based invalidation ──────────────────────────────────────────
 
+  it.each([
+    { label: "oversized tags only", tags: ["a".repeat(257)], cached: false },
+    { label: "non-string tags only", tags: [null, undefined], cached: false },
+    { label: "mixed valid and invalid tags", tags: ["posts", "a".repeat(257)], cached: true },
+  ])("uses valid tags to decide cacheability for $label", async ({ tags, cached }) => {
+    const init = { next: { tags: tags as unknown as string[] } };
+    const first = await fetch("https://api.example.com/validated-tags-only", init);
+    expect((await first.json()).count).toBe(1);
+    expect(getCollectedFetchTags()).toEqual(cached ? ["posts"] : []);
+
+    startNewFetchCacheScope();
+    const second = await fetch("https://api.example.com/validated-tags-only", init);
+    expect((await second.json()).count).toBe(cached ? 1 : 2);
+    expect(fetchMock).toHaveBeenCalledTimes(cached ? 1 : 2);
+  });
+
   it("tags-only fetch inherits the active route revalidate", async () => {
     setCurrentFetchRevalidate(60);
 

@@ -68,7 +68,10 @@ function normalizeAppPrefix(appPrefix: string | undefined): string {
 
 function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: string): string {
   const key = `${prefix}${categoryPrefix}${logicalKey}`;
-  if (kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) return key;
+  // Colon tags can spell app/category prefixes or the internal hash marker.
+  // Hash them so their contents cannot cross those namespace boundaries.
+  const colonTag = categoryPrefix === TAG_PREFIX && logicalKey.includes(":");
+  if (!colonTag && kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) return key;
 
   return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${fnv1a64(logicalKey)}`;
 }
