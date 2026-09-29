@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Buffer } from "node:buffer";
 import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -133,6 +134,60 @@ describe("deferUntilStreamConsumed", () => {
     const html = await new Response(deferUntilStreamConsumed(react, () => {})).text();
     expect(html).toBe("<p>hi</p>");
     expect(react.locked).toBe(false);
+  });
+
+  it("runs callbacks in the async context that created the wrapper", async () => {
+    // Callbacks read request-scoped state (such as collected fetch tags), but
+    // the consumer that drains the body pulls from outside the request scope.
+    const als = new AsyncLocalStorage<string>();
+    const lazyByteSource = (end: (controller: ReadableByteStreamController) => void) => {
+      let pulls = 0;
+      return new ReadableStream({
+        type: "bytes",
+        pull(controller) {
+          if (pulls++ < 3) controller.enqueue(encoder.encode("chunk"));
+          else end(controller);
+        },
+      });
+    };
+    const lazyDefaultSource = () => {
+      let pulls = 0;
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulls++ < 3) controller.enqueue(encoder.encode("chunk"));
+          else controller.close();
+        },
+      });
+    };
+    const wrap = (source: ReadableStream<Uint8Array>) => {
+      const seen: Array<string | undefined> = [];
+      const stream = als.run("request", () =>
+        deferUntilStreamConsumed(
+          source,
+          () => seen.push(als.getStore()),
+          () => seen.push(als.getStore()),
+        ),
+      );
+      return { seen, stream };
+    };
+
+    const drained = wrap(lazyByteSource((controller) => controller.close()));
+    expect(await new Response(drained.stream).text()).toBe("chunkchunkchunk");
+    expect(drained.seen).toEqual(["request"]);
+
+    const drainedDefault = wrap(lazyDefaultSource());
+    expect(await new Response(drainedDefault.stream).text()).toBe("chunkchunkchunk");
+    expect(drainedDefault.seen).toEqual(["request"]);
+
+    const errored = wrap(lazyByteSource((controller) => controller.error(new Error("boom"))));
+    await expect(new Response(errored.stream).text()).rejects.toThrow("boom");
+    expect(errored.seen).toEqual(["request", "request"]);
+
+    const cancelled = wrap(lazyByteSource((controller) => controller.close()));
+    const reader = cancelled.stream.getReader();
+    await reader.read();
+    await reader.cancel();
+    expect(cancelled.seen).toEqual(["request"]);
   });
 
   it("preserves bytes across randomized byte sources", async () => {
