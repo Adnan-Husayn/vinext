@@ -1,4 +1,5 @@
 import type { hydrateRoot, ReactFormState } from "react-dom/client";
+import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
 
 type HydrateRootOptions = NonNullable<Parameters<typeof hydrateRoot>[2]>;
 type HydrateRoot = typeof hydrateRoot;
@@ -9,8 +10,6 @@ type HydrateRootCaughtErrorHandler = NonNullable<HydrateRootOptions["onCaughtErr
 type HydrateRootUncaughtErrorHandler = NonNullable<HydrateRootOptions["onUncaughtError"]>;
 type HydrateRootRecoverableErrorHandler = NonNullable<HydrateRootOptions["onRecoverableError"]>;
 type StartTransition = (action: () => void) => void;
-
-export const RSC_FORM_STATE_GLOBAL = "__VINEXT_RSC_FORM_STATE__";
 
 type FormStateGlobal = {
   [RSC_FORM_STATE_GLOBAL]?: ReactFormState;
