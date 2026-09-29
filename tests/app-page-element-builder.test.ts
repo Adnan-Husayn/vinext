@@ -78,6 +78,16 @@ vi.mock("../packages/vinext/src/shims/headers.js", () => ({
   throwIfStaticGenerationAccessError: vi.fn(),
 }));
 
+// The searchParams observer and cache request state read dynamic-usage state
+// from the headers-state module directly.
+vi.mock("../packages/vinext/src/shims/internal/headers-state.js", () => ({
+  getHeadersAccessPhase: () => "render",
+  markDynamicUsage: markDynamicUsageMock,
+  markRenderRequestApiUsage: markRenderRequestApiUsageMock,
+  throwIfInsideCacheScope: vi.fn(),
+  throwIfStaticGenerationAccessError: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

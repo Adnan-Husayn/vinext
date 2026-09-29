@@ -3,7 +3,7 @@ import {
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
   throwIfStaticGenerationAccessError,
-} from "vinext/shims/headers";
+} from "vinext/shims/internal/headers-state";
 import {
   makeThenableParams,
   type ThenableParams,

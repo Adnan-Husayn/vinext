@@ -20,7 +20,7 @@ import {
 } from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { startCandidateSearchParamsGate } from "./app-ssr-search-params-gate.js";
-import { onRenderDynamicLatched } from "vinext/shims/headers";
+import { onRenderDynamicLatched } from "vinext/shims/internal/headers-state";
 import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-observation.js";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped } from "./open-redirect.js";

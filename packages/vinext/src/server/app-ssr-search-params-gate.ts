@@ -2,7 +2,7 @@ import {
   isRenderDynamicLatched,
   markDynamicUsage,
   onRenderDynamicLatched,
-} from "vinext/shims/headers";
+} from "vinext/shims/internal/headers-state";
 import { createSearchParamsGate, type SearchParamsGate } from "vinext/shims/search-params-gate";
 
 type CandidateSearchParamsGate = {
