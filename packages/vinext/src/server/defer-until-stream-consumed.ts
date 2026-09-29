@@ -20,11 +20,20 @@ export function deferUntilStreamConsumed(
   };
 
   const reader = getByteStreamReader(stream);
+  // Unlock the source once the wrapper settles, as pipeThrough did.
+  const release = () => {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Runtimes that predate releasing with pending reads throw here.
+    }
+  };
   return new ReadableStream<Uint8Array>({
     pull(controller) {
       return reader.read().then(
         ({ done, value }) => {
           if (done) {
+            release();
             once();
             controller.close();
           } else {
@@ -32,6 +41,7 @@ export function deferUntilStreamConsumed(
           }
         },
         (error) => {
+          release();
           onError?.(error);
           once();
           controller.error(error);
@@ -40,7 +50,7 @@ export function deferUntilStreamConsumed(
     },
     cancel(reason) {
       once();
-      return reader.cancel(reason);
+      return reader.cancel(reason).finally(release);
     },
   });
 }

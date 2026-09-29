@@ -6,7 +6,10 @@ const BYTE_STREAM_READ_SIZE = 64 * 1024;
 const PREFER_BYOB_READS =
   typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers";
 
-type ByteStreamReader = Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel">;
+type ByteStreamReader = Pick<
+  ReadableStreamDefaultReader<Uint8Array>,
+  "read" | "cancel" | "releaseLock"
+>;
 type ByteReadResult = ReadableStreamReadResult<Uint8Array<ArrayBuffer>>;
 
 /**
@@ -72,6 +75,9 @@ export function getByteStreamReader(stream: ReadableStream<Uint8Array>): ByteStr
     },
     cancel(reason) {
       return reader.cancel(reason);
+    },
+    releaseLock() {
+      reader.releaseLock();
     },
   };
 }

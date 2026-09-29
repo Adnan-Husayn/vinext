@@ -108,6 +108,33 @@ describe("deferUntilStreamConsumed", () => {
     expect(onFlush).toHaveBeenCalledTimes(1);
   });
 
+  it("releases the source reader once the wrapper settles", async () => {
+    const drained = byteStream([encoder.encode("a")]);
+    await new Response(deferUntilStreamConsumed(drained, () => {})).arrayBuffer();
+    expect(drained.locked).toBe(false);
+
+    const cancelled = byteStream([encoder.encode("a")]);
+    await deferUntilStreamConsumed(cancelled, () => {}).cancel();
+    expect(cancelled.locked).toBe(false);
+
+    const errored = new ReadableStream({
+      type: "bytes",
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+    await expect(
+      new Response(deferUntilStreamConsumed(errored, () => {})).arrayBuffer(),
+    ).rejects.toThrow("boom");
+    expect(errored.locked).toBe(false);
+
+    // React-style sources close without settling the pending BYOB read.
+    const react = await renderToReadableStream(createElement("p", null, "hi"));
+    const html = await new Response(deferUntilStreamConsumed(react, () => {})).text();
+    expect(html).toBe("<p>hi</p>");
+    expect(react.locked).toBe(false);
+  });
+
   it("preserves bytes across randomized byte sources", async () => {
     let seed = 7;
     const random = (n: number) => {
