@@ -34,10 +34,16 @@ import {
   computeLazyChunks,
 } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
-import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
+import {
+  collectAssetTags,
+  getSharedChunkFiles,
+} from "../packages/vinext/src/server/pages-asset-tags.js";
 import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
-import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
+import {
+  manifestFileWithBase,
+  SSR_MANIFEST_SHARED_CHUNKS_KEY,
+} from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
 import { aliasEntriesToRecord } from "./helpers.js";
 import { injectPregeneratedConcretePaths } from "../packages/vinext/src/build/inject-pregenerated-paths.js";
@@ -3112,6 +3118,70 @@ describe("augmentSsrManifestFromBundle", () => {
       "assets/vinext.js",
       "assets/framework.js",
     ]);
+  });
+
+  it("records shared runtime chunks by chunk name for hash-only file names", () => {
+    const bundle = {
+      "_next/static/chunks/aB3_x-9Z.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/aB3_x-9Z.js",
+        name: "vinext-client-entry",
+        isEntry: true,
+        facadeModuleId: "\0virtual:vinext-client-entry",
+        modules: { "/app/pages/index.tsx": {} },
+      },
+      "_next/static/chunks/Qw1-2eR_.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/Qw1-2eR_.js",
+        name: "index",
+        isEntry: true,
+        facadeModuleId: "\0virtual:vinext-client-entry",
+        modules: {},
+      },
+      "_next/static/chunks/Fr4m3w0k.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/Fr4m3w0k.js",
+        name: "framework",
+        modules: {},
+      },
+      "_next/static/chunks/V1n3xtRt.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/V1n3xtRt.js",
+        name: "vinext",
+        modules: {},
+      },
+      "_next/static/chunks/Ab0utPg1.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/Ab0utPg1.js",
+        name: "about",
+        modules: { "/app/pages/about.tsx": {} },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app", "/docs/");
+
+    expect(augmented[SSR_MANIFEST_SHARED_CHUNKS_KEY]).toEqual([
+      "docs/_next/static/chunks/aB3_x-9Z.js",
+      "docs/_next/static/chunks/Qw1-2eR_.js",
+      "docs/_next/static/chunks/Fr4m3w0k.js",
+      "docs/_next/static/chunks/V1n3xtRt.js",
+    ]);
+    expect(getSharedChunkFiles(augmented)).toBe(augmented[SSR_MANIFEST_SHARED_CHUNKS_KEY]);
+  });
+
+  it("omits the shared runtime chunk key when no shared chunks are emitted", () => {
+    const bundle = {
+      "assets/about.js": {
+        type: "chunk" as const,
+        fileName: "assets/about.js",
+        name: "about",
+        modules: { "/app/pages/about.tsx": {} },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app");
+
+    expect(augmented).not.toHaveProperty([SSR_MANIFEST_SHARED_CHUNKS_KEY]);
   });
 
   it("adds CSS and asset metadata from the containing chunk", () => {

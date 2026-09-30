@@ -14,7 +14,11 @@ import {
   computeDynamicImportPreloads,
   dynamicImportPreloadsWithBase,
 } from "./lazy-chunks.js";
-import { manifestFileWithBase, manifestFileWithAssetPrefix } from "./manifest-paths.js";
+import {
+  isSharedClientChunkName,
+  manifestFileWithBase,
+  manifestFileWithAssetPrefix,
+} from "./manifest-paths.js";
 import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
 
 type ClientRuntimeMetadata = {
@@ -25,11 +29,6 @@ type ClientRuntimeMetadata = {
   dynamicPreloads?: Record<string, string[]>;
   sharedChunks?: string[];
 };
-
-// Chunks every Pages Router document loads: the `framework` and `vinext`
-// manualChunks groups (see createClientManualChunks) plus the client entry.
-const SHARED_CHUNK_NAMES = new Set(["framework", "vinext"]);
-const SHARED_ENTRY_CHUNK_MARKERS = ["vinext-client-entry", "vinext-app-browser-entry"];
 
 /**
  * Shared Pages Router chunk files, keyed on Rolldown chunk names rather than
@@ -42,12 +41,7 @@ function collectSharedChunkFiles(
 ): string[] | undefined {
   const files = new Set<string>();
   for (const chunk of Object.values(buildManifest)) {
-    const name = chunk.name;
-    if (!name || !chunk.file.endsWith(".js")) continue;
-    if (
-      SHARED_CHUNK_NAMES.has(name) ||
-      SHARED_ENTRY_CHUNK_MARKERS.some((marker) => name.includes(marker))
-    ) {
+    if (chunk.file.endsWith(".js") && isSharedClientChunkName(chunk.name)) {
       files.add(applyBase(chunk.file));
     }
   }

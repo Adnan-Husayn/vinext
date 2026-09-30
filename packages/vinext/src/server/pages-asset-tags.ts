@@ -10,7 +10,10 @@
  */
 
 import { createNonceAttribute } from "./html.js";
-import { assetServingUrlFromBaseAnchored } from "../utils/manifest-paths.js";
+import {
+  assetServingUrlFromBaseAnchored,
+  SSR_MANIFEST_SHARED_CHUNKS_KEY,
+} from "../utils/manifest-paths.js";
 import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 import { getPagesClientAssets } from "./pages-client-assets.js";
 
@@ -76,11 +79,13 @@ function findModuleKey(manifest: Record<string, unknown>, moduleId: string): str
 }
 
 /**
- * Filename-based fallback for when no build-time `sharedChunks` list
- * (collected from chunk names) is registered. Only matches `[name]-[hash]`
- * client file names, not vinext's default hash-only names.
+ * Fallback for when no build-time `sharedChunks` list is registered. Prefers
+ * the chunk-name based list the build writes into the SSR manifest; the file
+ * name scan only matches `[name]-[hash]` names, not hash-only ones.
  */
 export function getSharedChunkFiles(manifest: Record<string, string[]>): string[] {
+  const recorded = manifest[SSR_MANIFEST_SHARED_CHUNKS_KEY];
+  if (recorded) return recorded;
   const cached = sharedChunkFiles.get(manifest);
   if (cached) return cached;
 

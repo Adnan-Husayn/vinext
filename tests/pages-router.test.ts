@@ -18,6 +18,7 @@ import {
 import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+import { SSR_MANIFEST_SHARED_CHUNKS_KEY } from "../packages/vinext/src/utils/manifest-paths.js";
 
 let captureFrameworkSpans = false;
 const capturedFrameworkSpans: ResolvedFrameworkSpanDescriptor[] = [];
@@ -6830,6 +6831,16 @@ export default function CounterPage() {
       const indexHtml = await indexRes.text();
       expect(indexHtml).toContain("Hello, vinext!");
       expect(indexHtml).toContain("__NEXT_DATA__");
+      // The two-call build registers no client metadata, so hydration scripts
+      // must come from the on-disk SSR manifest regardless of file names.
+      const clientScriptSrcs = [
+        ...indexHtml.matchAll(/<script type="module"[^>]*\bsrc="([^"]+)"/g),
+      ].map((match) => match[1]);
+      const sharedChunks: string[] = manifest[SSR_MANIFEST_SHARED_CHUNKS_KEY] ?? [];
+      expect(sharedChunks.length).toBeGreaterThan(0);
+      for (const file of sharedChunks) {
+        expect(clientScriptSrcs).toContain("/" + file);
+      }
       // Ported from Next.js: test/e2e/next-head/index.test.ts
       // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
       const indexHeadContents = indexHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
