@@ -13,7 +13,9 @@
  * source without a compiled worker entry, a single core,
  * `VINEXT_TRANSFORM_WORKERS=0`) or a worker fails, the transform runs
  * in-process. A transform that throws on the worker is re-run in-process so
- * the caller sees the same error.
+ * the caller sees the same error. The one exception is stack depth: workers
+ * get a larger stack than the main thread (see `WORKER_STACK_SIZE_MB`), so an
+ * AST walk that overflows in-process can succeed on a worker.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -25,8 +27,15 @@ import type { PureTransformKind } from "./transform-offload-worker.js";
 const OFFLOAD_MIN_SOURCE_LENGTH = 128 * 1024;
 const MAX_WORKERS = 2;
 // Idle workers hold a parsed copy of vite; release them in long-lived dev and
-// watch processes once large transforms stop arriving.
+// watch processes once large transforms stop arriving. The next large
+// transform then waits a few hundred ms for a fresh worker to import vite,
+// which is off the main thread.
 const WORKER_IDLE_TIMEOUT_MS = 10_000;
+// Worker threads default to a 4 MB stack, half the usual 8 MB main thread.
+// vite's native `parseAst` recurses on the calling thread and overflowing it
+// kills the process instead of throwing, so a default worker would crash on
+// deeply nested modules the main thread parses fine. Leave headroom above 8 MB.
+const WORKER_STACK_SIZE_MB = 16;
 const DEFAULT_WORKER_URL = new URL("./transform-offload-worker.js", import.meta.url);
 
 type PureTransformResult = MagicStringTransformResult | null;
@@ -114,7 +123,7 @@ export function createPureTransformPool(options: {
   }
 
   function spawnWorker(): PoolWorker {
-    const worker = new Worker(workerUrl);
+    const worker = new Worker(workerUrl, { resourceLimits: { stackSizeMb: WORKER_STACK_SIZE_MB } });
     const owner: PoolWorker = { worker, pending: 0 };
     worker.unref();
     worker.on("message", (response: PureTransformResponse) => {

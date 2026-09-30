@@ -977,5 +977,4 @@ function shouldTransformVeryDynamicRequests(
   );
 }
 
-export const _transformVeryDynamicRequests = transformVeryDynamicRequests;
 export const _mayContainVeryDynamicRequest = mayContainVeryDynamicRequest;

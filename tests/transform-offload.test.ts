@@ -161,6 +161,26 @@ describe("pure transform offloading", () => {
     expect(inProcess).not.toHaveBeenCalled();
   });
 
+  it("parses deeply nested modules the main thread parses", async () => {
+    // Nesting deep enough to overflow vite's native parser on a worker's
+    // default 4 MB stack, which kills the process instead of throwing.
+    const depth = 2_500;
+    const args = [
+      `const load = (name) => require(name);\nexport const value = ${"(".repeat(depth)}1${")".repeat(depth)};`,
+      DEPENDENCY_ID,
+    ] as const;
+    const expected = transformVeryDynamicRequests(...args);
+    expect(expected).not.toBeNull();
+    const inProcess = vi.fn(transformVeryDynamicRequests);
+
+    const result = await sourcePool.run("ignore-dynamic-requests", inProcess, [...args], {
+      sourcemap: false,
+    });
+
+    expect(result?.code).toBe(expected?.code);
+    expect(inProcess).not.toHaveBeenCalled();
+  });
+
   it("computes an omitted sourcemap in-process on first read", async () => {
     const args = ["const load = (name) => require(name);", DEPENDENCY_ID] as const;
     const expected = transformVeryDynamicRequests(...args);
