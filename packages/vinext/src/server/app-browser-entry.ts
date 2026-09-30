@@ -2617,7 +2617,8 @@ function bootstrapHydration(
         // the response body underneath createFromFetch and reports an unhandled
         // BodyStreamBuffer AbortError. The navigation id still prevents a late
         // decoded payload from committing. Refreshes retain ownership because
-        // their supplemental branch requests use the same signal until commit.
+        // their supplemental branch requests use the same signal until they
+        // settle.
         if (!hasSupplementalRefresh) {
           navigationAbortHandle.release();
         }
@@ -2700,7 +2701,15 @@ function bootstrapHydration(
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortHandle.signal,
             supplemental,
-          }).then(requireCompleteSupplementalRefresh);
+          })
+            .finally(() => {
+              // Settled supplemental requests stop listening to this signal, so
+              // it now guards only the primary Flight body React is about to
+              // render. Aborting that body would reject the refreshed tree's
+              // pending chunks into the nearest error boundary.
+              navigationAbortHandle.release();
+            })
+            .then(requireCompleteSupplementalRefresh);
         }
 
         // Static hosts cannot supply the compatibility response header used by
