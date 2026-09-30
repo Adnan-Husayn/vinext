@@ -1,10 +1,11 @@
 /**
- * Runs vinext's pure whole-module AST transforms for very large modules on a
- * small pool of worker threads.
+ * Runs vinext's pure whole-module AST transforms for large modules on a small
+ * pool of worker threads.
  *
- * Builds are bound by the main thread, and multi-megabyte server dependencies
- * (e.g. `typescript.js`) spend most of their vinext plugin time being parsed by
- * transforms that are pure functions of their arguments. Inputs of at least
+ * Builds are bound by the main thread, and mid-size server dependencies (e.g.
+ * `esprima`, `acorn` or the react-dom server builds) spend most of their
+ * vinext plugin time being parsed by transforms that are pure functions of
+ * their arguments. Inputs of at least
  * `OFFLOAD_MIN_SOURCE_LENGTH` characters run the same function on a worker;
  * smaller inputs stay inline, where a message round trip would cost more than
  * it saves. Callers apply each transform's cheap pre-parse check first, so only

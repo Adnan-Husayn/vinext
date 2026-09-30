@@ -373,4 +373,62 @@ describe("pure transform offloading", () => {
     expect(fromSource).not.toBeInstanceOf(Promise);
     expect((fromSource as typeof expected)?.code).toBe(expected?.code);
   });
+
+  it("sends large inputs to the shared pool when a compiled worker entry exists", async () => {
+    // Pretend the compiled worker entry ships next to the module, and start
+    // the source worker in its place.
+    const started: import("node:worker_threads").Worker[] = [];
+    vi.resetModules();
+    vi.doMock("node:worker_threads", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:worker_threads")>();
+      class SourceWorker extends actual.Worker {
+        constructor(_url: string | URL, options?: import("node:worker_threads").WorkerOptions) {
+          super(sourceWorkerUrl, options);
+          started.push(this);
+        }
+      }
+      return { ...actual, Worker: SourceWorker };
+    });
+    const existsSync = fs.existsSync;
+    vi.spyOn(fs, "existsSync").mockImplementation((file) =>
+      String(file).endsWith("/transform-offload-worker.js") ? true : existsSync(file),
+    );
+    vi.spyOn(os, "availableParallelism").mockReturnValue(4);
+
+    try {
+      const offload = await import("../packages/vinext/src/plugins/transform-offload.js");
+      const inProcess = vi.fn(transformVeryDynamicRequests);
+      const small = "const load = (name) => require(name);";
+      const large = padToOffloadSize(small);
+      const expected = transformVeryDynamicRequests(large, DEPENDENCY_ID);
+
+      const inline = offload.runPureTransform(
+        "ignore-dynamic-requests",
+        inProcess,
+        [small, DEPENDENCY_ID],
+        {
+          sourcemap: true,
+        },
+      );
+      expect(inline).not.toBeInstanceOf(Promise);
+      expect(inProcess).toHaveBeenCalledOnce();
+      expect(started).toHaveLength(0);
+
+      inProcess.mockClear();
+      const pending = offload.runPureTransform(
+        "ignore-dynamic-requests",
+        inProcess,
+        [large, DEPENDENCY_ID],
+        { sourcemap: true },
+      );
+      expect(pending).toBeInstanceOf(Promise);
+      expect(started).toHaveLength(1);
+      expect((await pending)?.code).toBe(expected?.code);
+      expect(inProcess).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all(started.map((worker) => worker.terminate()));
+      vi.doUnmock("node:worker_threads");
+      vi.resetModules();
+    }
+  });
 });
