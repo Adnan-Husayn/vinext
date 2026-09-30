@@ -41,8 +41,15 @@ async function resolveServerPreTransformRequests(
   command: "serve" | "build" = "serve",
 ): Promise<Record<"rsc" | "ssr", boolean | undefined>> {
   const root = createAppProject();
+  const { plugins = [], ...rest } = config;
   const resolved = await resolveConfig(
-    { root, configFile: false, logLevel: "silent", plugins: [vinext({ appDir: root })], ...config },
+    {
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ appDir: root }), ...plugins],
+      ...rest,
+    },
     command,
   );
   return {
@@ -86,6 +93,17 @@ describe("dev.preTransformRequests for server environments", () => {
   it("respects an explicit top-level server.preTransformRequests", async () => {
     await expect(
       resolveServerPreTransformRequests({ server: { preTransformRequests: false } }),
+    ).resolves.toEqual({ rsc: false, ssr: false });
+  });
+
+  it.each([
+    ["dev", { dev: { preTransformRequests: false } }],
+    ["server", { server: { preTransformRequests: false } }],
+  ] as const)("respects %s.preTransformRequests from a later plugin", async (_, value) => {
+    await expect(
+      resolveServerPreTransformRequests({
+        plugins: [{ name: "opt-out", config: () => value }],
+      }),
     ).resolves.toEqual({ rsc: false, ssr: false });
   });
 

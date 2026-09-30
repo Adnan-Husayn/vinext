@@ -41,7 +41,14 @@ type DevStackMiddleware = (req: IncomingMessage, res: ServerResponse, next: () =
 
 function createServer(
   sourceMap: SourceMapPayload | null = SOURCE_MAP,
-  options: { root?: string; ssr?: boolean; loadedFiles?: Record<string, string[]> } = {},
+  options: {
+    root?: string;
+    ssr?: boolean;
+    // Files each environment has transformed, or only resolved (a module
+    // graph entry without a transform result).
+    loadedFiles?: Record<string, string[]>;
+    resolvedFiles?: Record<string, string[]>;
+  } = {},
 ): {
   server: ViteDevServer;
   transformRequests: string[];
@@ -52,7 +59,13 @@ function createServer(
   const createEnvironment = (name: string) => ({
     moduleGraph: {
       getModulesByFile(file: string) {
-        return options.loadedFiles?.[name]?.includes(file) ? new Set([{ file }]) : undefined;
+        if (options.loadedFiles?.[name]?.includes(file)) {
+          return new Set([{ file, transformResult: { code: "", map: sourceMap } }]);
+        }
+        if (options.resolvedFiles?.[name]?.includes(file)) {
+          return new Set([{ file, transformResult: null }]);
+        }
+        return undefined;
       },
     },
     async transformRequest(viteUrl: string) {
@@ -565,6 +578,31 @@ describe("mapStackLine", () => {
     const { server, transformRequests } = createServer(
       { sources: ["site-footer.tsx"], mappings: ";;;;;;;;AAKQ" },
       { ssr: true, loadedFiles: { ssr: ["/repo/app/app/_components/site-footer.tsx"] } },
+    );
+    const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
+
+    const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
+    await expect(
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
+    ).resolves.toBe(`    at SiteFooter (${mappedFileUrl}:6:9)`);
+    expect(transformRequests).toEqual(["ssr:/repo/app/app/_components/site-footer.tsx"]);
+  });
+
+  it("does not treat a resolved but untransformed module as loaded", async () => {
+    // Vite adds a module graph entry as soon as an import resolves, so the RSC
+    // graph can know an SSR-only file it never transformed.
+    const { server, transformRequests } = createServer(
+      { sources: ["site-footer.tsx"], mappings: ";;;;;;;;AAKQ" },
+      {
+        ssr: true,
+        loadedFiles: { ssr: ["/repo/app/app/_components/site-footer.tsx"] },
+        resolvedFiles: { rsc: ["/repo/app/app/_components/site-footer.tsx"] },
+      },
     );
     const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
 
