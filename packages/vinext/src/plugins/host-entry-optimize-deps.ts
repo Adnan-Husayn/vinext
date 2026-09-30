@@ -30,7 +30,9 @@ const MAX_HOST_ENTRY_FILES = 64;
  *
  * Only relative imports inside the entry's own package are followed. Type-only
  * imports, builtins, protocol ids, package imports, and imports of the owning
- * package itself are skipped.
+ * package itself are skipped. Ids are not resolved further, so non-JS subpaths
+ * (CSS, JSON, WASM) are kept. Vite skips those includes, as discovery does, and
+ * the caller silences the warning it logs for them.
  */
 export function collectHostEntryOptimizeDepsIncludes(entry: string, root: string): string[] {
   const realEntry = canonicalizeFilePath(entry);

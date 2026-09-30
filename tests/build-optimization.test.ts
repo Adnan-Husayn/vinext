@@ -1351,16 +1351,23 @@ describe("optimizeDeps.exclude for vinext", () => {
   });
 
   it.each([
-    { name: "dev with a matched multi-stage output", expected: ["@adapter/store", "helper-dep"] },
+    {
+      name: "dev with a matched multi-stage output",
+      expected: ["@adapter/store", "@adapter/store/style.css", "helper-dep"],
+    },
     { name: "production", command: "build", expected: [] as string[] },
     { name: "without the Cloudflare plugin", cloudflare: false, expected: [] as string[] },
     { name: "unmatched multi-stage output", matchesBuild: false, expected: [] as string[] },
     { name: "rsc noDiscovery", rsc: { noDiscovery: true }, expected: [] as string[] },
-    { name: "rsc exclusion", rsc: { exclude: ["helper-dep"] }, expected: ["@adapter/store"] },
+    {
+      name: "rsc exclusion",
+      rsc: { exclude: ["helper-dep"] },
+      expected: ["@adapter/store", "@adapter/store/style.css"],
+    },
     {
       name: "rsc explicit include",
       rsc: { include: ["helper-dep"] },
-      expected: ["@adapter/store", "helper-dep"],
+      expected: ["@adapter/store", "@adapter/store/style.css", "helper-dep"],
     },
   ])("pre-includes multi-stage host entry dependencies: $name", async (options) => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-host-entry-optdeps-"));
@@ -1379,6 +1386,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       entry,
       [
         'import { createStore } from "@adapter/store";',
+        'import "@adapter/store/style.css";',
         'import { loadVinextRequestStage } from "vinext/server/request-stage";',
         'import { helper } from "./helper.js";',
         "export default createStore(helper, loadVinextRequestStage);",
@@ -1431,7 +1439,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       };
       await plugin.configResolved(resolvedConfig);
 
-      const hostEntryIds = new Set(["@adapter/store", "helper-dep"]);
+      const hostEntryIds = new Set(["@adapter/store", "@adapter/store/style.css", "helper-dep"]);
       const rscIncludes = rscConfig.optimizeDeps.include as string[];
       expect(rscIncludes.filter((id) => hostEntryIds.has(id)).sort()).toEqual(options.expected);
       expect(
@@ -1440,13 +1448,17 @@ describe("optimizeDeps.exclude for vinext", () => {
       // Excluded packages (vinext itself) stay out.
       expect(rscIncludes.some((id) => id.includes("vinext/"))).toBe(false);
 
-      // Unresolvable optional ids stay quiet, like other optional includes.
-      for (const id of options.expected.filter((id) => !options.rsc?.include?.includes(id))) {
-        resolvedConfig.logger.warn(
-          `Failed to resolve dependency: ${id}, present in rsc 'optimizeDeps.include'`,
-        );
+      // Unresolvable or non-JS optional ids stay quiet, as discovery skips
+      // them too. Warnings for explicit includes are kept.
+      const expectedWarnings: string[] = [];
+      for (const id of options.expected) {
+        for (const reason of ["Failed to resolve dependency", "Cannot optimize dependency"]) {
+          const warning = `${reason}: \x1b[36m${id}\x1b[39m, present in rsc 'optimizeDeps.include'`;
+          resolvedConfig.logger.warn(warning);
+          if (options.rsc?.include?.includes(id)) expectedWarnings.push(warning);
+        }
       }
-      expect(warned).toEqual([]);
+      expect(warned).toEqual(expectedWarnings);
     } finally {
       await fsp.rm(root, { recursive: true, force: true });
     }
