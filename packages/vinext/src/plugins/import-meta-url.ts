@@ -227,7 +227,7 @@ export function createImportMetaUrlPlugin(options: {
         options.createEmittedModuleFileNameResolver?.(config) ?? ((_, fileName) => fileName);
       rootPaths = createRootPaths(root, { outputDirs });
       rscManager = (
-        config.plugins?.find((plugin) => plugin.name === "rsc:minimal") as
+        config.plugins.find((plugin) => plugin.name === "rsc:minimal") as
           | RscPluginWithApi
           | undefined
       )?.api?.manager;
@@ -255,7 +255,8 @@ export function createImportMetaUrlPlugin(options: {
         // plugin-rsc's write-less analysis builds reduce every module to its
         // import specifiers. These rewrites only replace expressions and add
         // `var` declarations (the runtime `node:*` imports are added to emitted
-        // chunks by renderChunk), so they cannot change the scanned graph.
+        // chunks by renderChunk). The only specifier they can add is a module's
+        // own URL, from `import(import.meta.url)`, so the scanned graph is the same.
         if (rscManager?.isScanBuild && this.environment?.config.build.write === false) {
           return null;
         }

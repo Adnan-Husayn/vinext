@@ -1026,6 +1026,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     const config = {
       root: realRoot,
       build: { outDir: path.join(realRoot, "dist/server") },
+      plugins: [],
       environments: {
         auxiliary: {
           consumer: "server",
@@ -1079,6 +1080,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
       {
         root: realRoot,
         build: { outDir: path.join(realRoot, "dist") },
+        plugins: [],
         environments: {
           nitro: {
             consumer: "server",
@@ -1585,7 +1587,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
   it("reuses the cached plugin transform result per environment kind", () => {
     const { vitePlugin: plugin } = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const configResolved = unwrapHook(plugin.configResolved).bind(plugin);
-    configResolved({ root: realRoot, build: { outDir: "dist" } });
+    configResolved({ root: realRoot, build: { outDir: "dist" }, plugins: [] });
     const transform = unwrapHook(plugin.transform);
     const source = `export const url = import.meta.url;\n`;
     const serverContext = { environment: { name: "rsc" } };
@@ -1702,7 +1704,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     }
   });
 
-  it("never adds import specifiers that an import-scan build could observe", () => {
+  it("never adds modules to the graph an import-scan build could observe", () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transform = unwrapHook(capability.vitePlugin.transform);
     const source = [
@@ -1711,8 +1713,10 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
       'export { value } from "./value.js";',
       "exports.require = createRequire(import.meta.url);",
       'exports.lazy = () => import("./lazy.js");',
+      "exports.self = () => import(import.meta.url);",
       "exports.paths = [__filename, __dirname, new URL('./asset.txt', import.meta.url)];",
     ].join("\n");
+    const sourceSpecifiers = collectImportSpecifiers(source);
 
     for (const mode of ["dev", "build"] as const) {
       for (const id of [cjsDependencyPath, localCjsPath]) {
@@ -1723,7 +1727,14 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
         );
         expect(result).not.toBeNull();
         expect(result.code).not.toBe(source);
-        expect(collectImportSpecifiers(result.code)).toEqual(collectImportSpecifiers(source));
+        // A source-identity rewrite turns `import(import.meta.url)` into a
+        // literal specifier, but only ever for the module's own URL.
+        const ownUrl = pathToFileURL(fs.realpathSync(id)).href;
+        expect(
+          collectImportSpecifiers(result.code).map((specifier, index) =>
+            specifier === ownUrl && sourceSpecifiers[index] === undefined ? undefined : specifier,
+          ),
+        ).toEqual(sourceSpecifiers);
       }
     }
   });
@@ -1750,7 +1761,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
 
     const { vitePlugin: plugin } = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const configResolved = unwrapHook(plugin.configResolved).bind(plugin);
-    configResolved({ root: realRoot, build: { outDir: "dist" } });
+    configResolved({ root: realRoot, build: { outDir: "dist" }, plugins: [] });
     const transform = unwrapHook(plugin.transform);
     const serverContext = { environment: { name: "rsc" } };
 
