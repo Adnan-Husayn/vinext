@@ -75,6 +75,11 @@ function findModuleKey(manifest: Record<string, unknown>, moduleId: string): str
   return matchedKey;
 }
 
+/**
+ * Filename-based fallback for manifests that arrive without the build-time
+ * `sharedChunks` list (collected from chunk names). Only matches vinext's
+ * default `[name]-[hash]` client file names.
+ */
 export function getSharedChunkFiles(manifest: Record<string, string[]>): string[] {
   const cached = sharedChunkFiles.get(manifest);
   if (cached) return cached;

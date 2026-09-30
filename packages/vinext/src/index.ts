@@ -281,7 +281,8 @@ import {
   type SassTsconfigPathAlias,
 } from "./plugins/sass.js";
 import {
-  createClientFileNameConfig,
+  createClientOutputFileNameDefaults,
+  findClientOutputFileNamesOutsideAssetsDir,
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
@@ -1431,15 +1432,13 @@ const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualCh
 const appClientManualChunks = createClientManualChunks(_shimsDir, true);
 const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientManualChunks);
 
-function getClientOutputConfig(assetsDir: string, preserveAppRouteBoundaries = false) {
+function getClientOutputConfig(preserveAppRouteBoundaries = false) {
   const codeSplitting = preserveAppRouteBoundaries
     ? appClientCodeSplittingConfig
     : clientCodeSplittingConfig;
-  return {
-    ...createClientFileNameConfig(assetsDir),
-    assetFileNames: createClientAssetFileNames(assetsDir),
-    codeSplitting,
-  };
+  // File names are defaults that yield to user config; see
+  // createClientOutputFileNameDefaults and vinext:css-url-assets-defaults.
+  return { codeSplitting };
 }
 
 export type VinextOptions = {
@@ -1657,6 +1656,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // plugin. `config` runs before `configEnvironment`/build, and the `= 0`
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
+  // Set in the `config` hook when vinext owns the client build's output shape.
+  // The `configEnvironment` defaults plugin then fills in client file names the
+  // user left unset, so a user's entry/chunk/asset file names win.
+  let clientOutputFileNamesAssetsDir: string | null = null;
   let hasCloudflarePlugin = false;
   let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
@@ -3210,6 +3213,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Next emits CSS url() deps as files, not inlined data URLs. A user's
         // explicit `build.assetsInlineLimit` always wins.
         clientAssetsInlineLimit = config.build?.assetsInlineLimit ?? 0;
+        clientOutputFileNamesAssetsDir =
+          (!isSSR && !isMultiEnv) ||
+          hasAppDir ||
+          hasCloudflarePlugin ||
+          shouldInjectPlainPagesEnvironments
+            ? clientAssetsDir
+            : null;
         const devHmrConfig =
           config.server?.hmr === false
             ? false
@@ -3419,7 +3429,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Router). For multi-environment builds (App Router, Cloudflare),
               // manualChunks is set per-environment on the client env below
               // to avoid leaking into RSC/SSR environments.
-              ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
+              ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig() } : {}),
             }),
           },
           worker: {
@@ -4072,7 +4082,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: appClientInput,
-                  output: getClientOutputConfig(clientAssetsDir, true),
+                  output: getClientOutputConfig(true),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4097,7 +4107,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(clientAssetsDir),
+                  output: getClientOutputConfig(),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4127,7 +4137,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(clientAssetsDir),
+                  output: getClientOutputConfig(),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -5258,7 +5268,30 @@ export const loadServerActionClient = ${
 
       configEnvironment(name, config) {
         if (name === "client") {
-          return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+          const output = getBuildBundlerOptions(config.build)?.output;
+          const fileNameDefaults = clientOutputFileNamesAssetsDir
+            ? createClientOutputFileNameDefaults(output, clientOutputFileNamesAssetsDir)
+            : null;
+          if (clientOutputFileNamesAssetsDir) {
+            const outside = findClientOutputFileNamesOutsideAssetsDir(
+              output,
+              clientOutputFileNamesAssetsDir,
+            );
+            if (outside.length > 0) {
+              console.warn(
+                `[vinext] Client output file names should stay under "${clientOutputFileNamesAssetsDir}/" ` +
+                  `so built asset URLs, immutable caching and precompression keep working: ${outside.join(", ")}`,
+              );
+            }
+          }
+          return {
+            build: {
+              assetsInlineLimit: clientAssetsInlineLimit,
+              ...(fileNameDefaults && Object.keys(fileNameDefaults).length > 0
+                ? withBuildBundlerOptions({ output: fileNameDefaults })
+                : {}),
+            },
+          };
         }
         if (!hasAppDir || (name !== "rsc" && name !== "ssr")) return null;
         const output = getBuildBundlerOptions(config.build)?.output;
@@ -8132,6 +8165,9 @@ export const loadServerActionClient = ${
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               ssrManifest,
               cssGraph: runtimeMetadata.cssGraph,
+              ...(ssrManifest && runtimeMetadata.sharedChunks
+                ? { sharedChunks: runtimeMetadata.sharedChunks }
+                : {}),
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
               crossOrigin: nextConfig.crossOrigin ?? "",

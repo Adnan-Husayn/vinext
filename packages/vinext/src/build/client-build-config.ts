@@ -180,6 +180,52 @@ export function createClientFileNameConfig(assetsDir: string) {
   };
 }
 
+/**
+ * vinext's client output file names, limited to the ones the incoming client
+ * environment config leaves unset. Vite merges `config` hook results over the
+ * user's config, so vinext applies these from `configEnvironment` instead: by
+ * then the user's top-level `build` and `environments.client.build` are merged
+ * into the client environment, and a user-provided pattern wins.
+ *
+ * Returns null for array-shaped output, which cannot be augmented without Vite
+ * concatenating a second output entry.
+ */
+export function createClientOutputFileNameDefaults(
+  output: VinextBuildBundlerOptions["output"],
+  assetsDir: string,
+) {
+  if (Array.isArray(output)) return null;
+  const configured = output ?? {};
+  const { entryFileNames, chunkFileNames } = createClientFileNameConfig(assetsDir);
+  return {
+    ...(configured.entryFileNames === undefined ? { entryFileNames } : {}),
+    ...(configured.chunkFileNames === undefined ? { chunkFileNames } : {}),
+    ...(configured.assetFileNames === undefined
+      ? { assetFileNames: createClientAssetFileNames(assetsDir) }
+      : {}),
+  };
+}
+
+/**
+ * User-provided client file name patterns that land outside `assetsDir`.
+ * Built-asset URLs, immutable caching and precompression all assume client
+ * output lives there. Function patterns cannot be checked statically.
+ */
+export function findClientOutputFileNamesOutsideAssetsDir(
+  output: VinextBuildBundlerOptions["output"],
+  assetsDir: string,
+): string[] {
+  if (!output || Array.isArray(output)) return [];
+  const outside: string[] = [];
+  for (const key of ["entryFileNames", "chunkFileNames", "assetFileNames"] as const) {
+    const value = output[key];
+    if (typeof value === "string" && !value.startsWith(`${assetsDir}/`)) {
+      outside.push(`${key}: ${JSON.stringify(value)}`);
+    }
+  }
+  return outside;
+}
+
 export function createClientCodeSplittingConfig(
   clientManualChunks: (id: string) => string | undefined,
 ) {

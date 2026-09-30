@@ -23,7 +23,36 @@ type ClientRuntimeMetadata = {
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
+  sharedChunks?: string[];
 };
+
+// Chunks every Pages Router document loads: the `framework` and `vinext`
+// manualChunks groups (see createClientManualChunks) plus the client entry.
+const SHARED_CHUNK_NAMES = new Set(["framework", "vinext"]);
+const SHARED_ENTRY_CHUNK_MARKERS = ["vinext-client-entry", "vinext-app-browser-entry"];
+
+/**
+ * Shared Pages Router chunk files, keyed on Rolldown chunk names rather than
+ * emitted file names so user-configured `chunkFileNames` (e.g. hash-only
+ * patterns) keep their modulepreload/script tags.
+ */
+function collectSharedChunkFiles(
+  buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
+  applyBase: (file: string) => string,
+): string[] | undefined {
+  const files = new Set<string>();
+  for (const chunk of Object.values(buildManifest)) {
+    const name = chunk.name;
+    if (!name || !chunk.file.endsWith(".js")) continue;
+    if (
+      SHARED_CHUNK_NAMES.has(name) ||
+      SHARED_ENTRY_CHUNK_MARKERS.some((marker) => name.includes(marker))
+    ) {
+      files.add(applyBase(chunk.file));
+    }
+  }
+  return files.size > 0 ? [...files] : undefined;
+}
 
 function collectCssGraph(
   buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
@@ -129,6 +158,10 @@ export function computeClientRuntimeMetadata(opts: {
 
   if (opts.includeClientEntry) {
     metadata.cssGraph = collectCssGraph(buildManifest, (file) =>
+      manifestFileWithBase(file, opts.assetBase),
+    );
+    // SSR-manifest key-space (basePath only), like `lazyChunks` below.
+    metadata.sharedChunks = collectSharedChunkFiles(buildManifest, (file) =>
       manifestFileWithBase(file, opts.assetBase),
     );
   }
