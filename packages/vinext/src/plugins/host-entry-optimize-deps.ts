@@ -4,7 +4,13 @@ import { parseAst, type Alias, type ESTree } from "vite";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
 import { canonicalizeFilePath, NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { readJsonFile } from "../utils/safe-json-file.js";
-import { scriptParserLanguage } from "./ast-utils.js";
+import {
+  mayContainDynamicImport,
+  scriptParserLanguage,
+  staticStringValue,
+  walkAst,
+  type ScriptParserLanguage,
+} from "./ast-utils.js";
 
 // Adapter Worker entries are small module graphs. The cap only bounds startup
 // work if an entry unexpectedly reaches a large part of its package.
@@ -28,14 +34,16 @@ const MAX_HOST_ENTRY_FILES = 64;
  * has its own copy registered by Vite first, so its dependency is kept only
  * when that copy is the root's.
  *
- * Only relative imports inside the entry's own package are followed, by real
- * path as Vite loads them. Type-only imports, builtins, protocol ids, package
- * imports, and imports of the owning package itself are skipped. So are ids
- * matched by `aliases`: server environments only optimize an aliased bare
- * import when it is explicitly included, so including one would change it.
- * Ids are not resolved further, so non-JS subpaths (CSS, JSON, WASM) are kept.
- * Vite skips those includes, as discovery does, and the caller silences the
- * warning it logs for them.
+ * Import declarations, re-exports and literal dynamic imports are read, as
+ * Vite's scanner reads them. Only relative imports inside the entry's own
+ * package are followed, by real path as Vite loads them. Type-only imports,
+ * computed dynamic imports, builtins, protocol ids, package imports, and
+ * imports of the owning package itself are skipped. So are ids matched by
+ * `aliases`: server environments only optimize an aliased bare import when it
+ * is explicitly included, so including one would change it. Ids are not
+ * resolved further, so non-JS subpaths (CSS, JSON, WASM) are kept. Vite skips
+ * those includes, as discovery does, and the caller silences the warning it
+ * logs for them.
  */
 export function collectHostEntryOptimizeDepsIncludes(
   entry: string,
@@ -58,16 +66,14 @@ export function collectHostEntryOptimizeDepsIncludes(
 
     const lang = scriptParserLanguage(file);
     if (!lang || findOwningPackageName(file, owners) !== owner) continue;
-    let ast: ESTree.Program;
+    let specifiers: string[];
     try {
-      ast = parseAst(fs.readFileSync(file, "utf-8"), { lang });
+      specifiers = runtimeImportSpecifiers(fs.readFileSync(file, "utf-8"), lang);
     } catch {
       continue;
     }
 
-    for (const statement of ast.body) {
-      if (!isRuntimeModuleDeclaration(statement)) continue;
-      const specifier = statement.source.value;
+    for (const specifier of specifiers) {
       if (specifier.startsWith("./") || specifier.startsWith("../")) {
         pending.push(canonicalizeFilePath(path.resolve(path.dirname(file), specifier)));
         continue;
@@ -85,6 +91,27 @@ export function collectHostEntryOptimizeDepsIncludes(
     }
   }
   return [...includes];
+}
+
+/**
+ * List a module's runtime import specifiers: import and re-export
+ * declarations, then dynamic imports whose request is a static string.
+ */
+function runtimeImportSpecifiers(code: string, lang: ScriptParserLanguage): string[] {
+  const ast = parseAst(code, { lang });
+  const specifiers: string[] = [];
+  for (const statement of ast.body) {
+    if (isRuntimeModuleDeclaration(statement)) specifiers.push(statement.source.value);
+  }
+  if (!mayContainDynamicImport(code)) return specifiers;
+  for (const statement of ast.body) {
+    walkAst(statement, (node) => {
+      if (node.type !== "ImportExpression") return;
+      const specifier = staticStringValue(node.source);
+      if (specifier !== null) specifiers.push(specifier);
+    });
+  }
+  return specifiers;
 }
 
 type ModuleDeclarationWithSource = (

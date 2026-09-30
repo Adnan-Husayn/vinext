@@ -45,6 +45,9 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
       "entry-dep",
       "cycle-dep",
       "broken-dep",
+      "dynamic-dep",
+      "lazy-dep",
+      "template-dep",
     ]) {
       install(name);
     }
@@ -82,6 +85,23 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     ]);
   });
 
+  it("follows dynamic imports with a static request", () => {
+    const entry = write(
+      "dist/entry.worker.js",
+      [
+        'const store = await import("dynamic-dep");',
+        "export async function load(name) {",
+        '  const { lazy } = await import("./lazy.js");',
+        "  const template = await import(`template-dep`);",
+        "  return [store, lazy, template, await import(name), await import(`${name}-dep`)];",
+        "}",
+      ].join("\n"),
+    );
+    write("dist/lazy.js", 'export const lazy = () => import("lazy-dep");\n');
+
+    expect(collect(entry)).toEqual(["dynamic-dep", "lazy-dep", "template-dep"]);
+  });
+
   it("skips type-only imports", () => {
     const entry = write(
       "entry.ts",
@@ -93,6 +113,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
         'export type * from "type-only-export-all";',
         'import { type Mixed, runtime } from "mixed-specifiers";',
         'import {} from "empty-specifiers";',
+        'export type Lazy = typeof import("type-only-import-type");',
         "export const value = runtime as unknown as Store & Options;",
       ].join("\n"),
     );
