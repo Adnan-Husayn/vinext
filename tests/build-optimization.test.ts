@@ -1358,9 +1358,9 @@ describe("optimizeDeps.exclude for vinext", () => {
     { name: "rsc noDiscovery", rsc: { noDiscovery: true }, expected: [] as string[] },
     { name: "rsc exclusion", rsc: { exclude: ["helper-dep"] }, expected: ["@adapter/store"] },
     {
-      name: "rsc root-form include",
+      name: "rsc explicit include",
       rsc: { include: ["helper-dep"] },
-      expected: ["@adapter/store"],
+      expected: ["@adapter/store", "helper-dep"],
     },
   ])("pre-includes multi-stage host entry dependencies: $name", async (options) => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-host-entry-optdeps-"));
@@ -1431,21 +1431,17 @@ describe("optimizeDeps.exclude for vinext", () => {
       };
       await plugin.configResolved(resolvedConfig);
 
+      const hostEntryIds = new Set(["@adapter/store", "helper-dep"]);
       const rscIncludes = rscConfig.optimizeDeps.include as string[];
-      const expected = options.expected.map((id) => `@adapter/platform > ${id}`);
-      expect(rscIncludes.filter((id) => id.startsWith("@adapter/platform")).sort()).toEqual(
-        expected,
-      );
+      expect(rscIncludes.filter((id) => hostEntryIds.has(id)).sort()).toEqual(options.expected);
       expect(
-        (ssrConfig.optimizeDeps.include ?? []).filter((id: string) =>
-          id.startsWith("@adapter/platform"),
-        ),
+        (ssrConfig.optimizeDeps.include ?? []).filter((id: string) => hostEntryIds.has(id)),
       ).toEqual([]);
       // Excluded packages (vinext itself) stay out.
       expect(rscIncludes.some((id) => id.includes("vinext/"))).toBe(false);
 
       // Unresolvable optional ids stay quiet, like other optional includes.
-      for (const id of expected) {
+      for (const id of options.expected.filter((id) => !options.rsc?.include?.includes(id))) {
         resolvedConfig.logger.warn(
           `Failed to resolve dependency: ${id}, present in rsc 'optimizeDeps.include'`,
         );

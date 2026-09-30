@@ -4271,13 +4271,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ? ["use-sync-external-store/with-selector"]
                 : [];
             for (const id of optionalIncludes) {
-              // Host-entry includes use Vite's nested `owner > dependency` form.
-              const dependency = id.slice(id.lastIndexOf(">") + 1).trim();
               if (
                 optimizer.include?.includes(id) ||
-                optimizer.include?.includes(dependency) ||
                 optimizer.exclude?.some(
-                  (excluded) => dependency === excluded || dependency.startsWith(`${excluded}/`),
+                  (excluded) => id === excluded || id.startsWith(`${excluded}/`),
                 )
               ) {
                 continue;

@@ -23,9 +23,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
   }
 
   function collect(entry: string): string[] {
-    return collectHostEntryOptimizeDepsIncludes(entry, root)
-      .map((id) => id.replace(/^@adapter\/platform > /, ""))
-      .sort();
+    return collectHostEntryOptimizeDepsIncludes(entry, root).sort();
   }
 
   beforeEach(() => {
@@ -168,41 +166,59 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     expect(includes).not.toContain("dep-64");
   });
 
-  it("emits nested includes so dependencies resolve from the adapter package", () => {
-    // The adapter depends on its own copy, which differs from the app's.
+  it("emits root-form ids, as the optimizer discovers them", () => {
+    // The adapter's own copy differs from the app's. On discovery,
+    // @vitejs/plugin-rsc re-resolves the import from the root and Vite serves
+    // that copy to the adapter, so the root-form id matches.
     install("skewed-dep");
     install("skewed-dep", packageRoot);
     const entry = write("entry.js", 'import "skewed-dep";\nimport "real-dep/subpath";\n');
 
-    expect(collectHostEntryOptimizeDepsIncludes(entry, root).sort()).toEqual([
-      "@adapter/platform > real-dep/subpath",
-      "@adapter/platform > skewed-dep",
-    ]);
+    expect(collect(entry)).toEqual(["real-dep/subpath", "skewed-dep"]);
   });
 
-  it("skips dependencies that are missing or resolve outside node_modules", () => {
+  it("skips dependencies that are not in node_modules from both the importer and the root", () => {
+    // Linked from the root.
     const linkedRoot = path.join(root, "packages", "linked-dep");
     fs.mkdirSync(linkedRoot, { recursive: true });
     fs.writeFileSync(path.join(linkedRoot, "package.json"), JSON.stringify({ name: "linked-dep" }));
     fs.symlinkSync(linkedRoot, path.join(root, "node_modules", "linked-dep"), "junction");
+    // Linked from the importer, with a real copy at the root.
+    const importerLinkedRoot = path.join(root, "packages", "importer-linked-dep");
+    fs.mkdirSync(importerLinkedRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(importerLinkedRoot, "package.json"),
+      JSON.stringify({ name: "importer-linked-dep" }),
+    );
+    install("importer-linked-dep");
+    fs.mkdirSync(path.join(packageRoot, "node_modules"), { recursive: true });
+    fs.symlinkSync(
+      importerLinkedRoot,
+      path.join(packageRoot, "node_modules", "importer-linked-dep"),
+      "junction",
+    );
+    // Only installed for the adapter, as under strict pnpm.
+    install("adapter-only-dep", packageRoot);
     const entry = write(
       "entry.js",
-      'import "linked-dep";\nimport "missing-dep";\nimport "real-dep";\n',
+      [
+        'import "linked-dep";',
+        'import "importer-linked-dep";',
+        'import "adapter-only-dep";',
+        'import "missing-dep";',
+        'import "real-dep";',
+      ].join("\n"),
     );
 
     expect(collect(entry)).toEqual(["real-dep"]);
   });
 
-  it("returns nothing when the adapter does not resolve to itself from the root", () => {
+  it("does not require the adapter itself to resolve from the root", () => {
     const entry = write("entry.js", 'import "real-dep";\n');
     const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-host-entry-root-"));
     try {
-      // Unresolvable from the root: Vite would resolve the dependency from the
-      // root instead.
-      expect(collectHostEntryOptimizeDepsIncludes(entry, otherRoot)).toEqual([]);
-      // Resolves to a different copy of the adapter.
-      install("@adapter/platform", otherRoot);
-      expect(collectHostEntryOptimizeDepsIncludes(entry, otherRoot)).toEqual([]);
+      install("real-dep", otherRoot);
+      expect(collectHostEntryOptimizeDepsIncludes(entry, otherRoot)).toEqual(["real-dep"]);
     } finally {
       fs.rmSync(otherRoot, { recursive: true, force: true });
     }
