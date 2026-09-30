@@ -1908,7 +1908,7 @@ describe("treeshake config integration", () => {
       const message = String(warn.mock.calls[0]?.[0]);
       expect(message).toContain('chunkFileNames: "[hash].js" (outside "_next/static/")');
       expect(message).toContain(
-        'assetFileNames: "_next/static/media/[name]" (no [hash], no [extname])',
+        'assetFileNames: "_next/static/media/[name]" (no [hash], not ending in [extname])',
       );
       expect(message).not.toContain("entryFileNames");
 
@@ -1921,6 +1921,7 @@ describe("treeshake config integration", () => {
               output: {
                 entryFileNames: "_next/static/chunks/[hash].mjs",
                 chunkFileNames: "_next/static/chunks/[name]-[hash].js",
+                assetFileNames: "_next/static/media/[name]-[hash].[ext]",
               },
             },
           },
@@ -1932,6 +1933,7 @@ describe("treeshake config integration", () => {
         'entryFileNames: "_next/static/chunks/[hash].mjs" (not ".js")',
       );
       expect(String(warn.mock.calls[0]?.[0])).not.toContain("chunkFileNames");
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain("assetFileNames");
 
       // Plain Pages SSR keeps the server naming it used to inherit from the
       // top-level client output, as defaults that yield to user config.

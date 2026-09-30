@@ -216,8 +216,8 @@ export function createClientOutputFileNameDefaults(
  *   `immutable`, so an unhashed URL would pin stale code for a year;
  * - JS not ending in `.js`: client metadata and Pages Router script
  *   tags only recognize `.js` chunks;
- * - assets without `[extname]`: extensionless CSS is served as
- *   `application/octet-stream` and rejected by browsers.
+ * - assets not ending in `[extname]` (or `.[ext]`): CSS without its real
+ *   extension is served as `application/octet-stream` and rejected by browsers.
  * This is a guard against common mistakes, not full validation: function
  * patterns and array-shaped output are advanced config left to the user to
  * keep within these rules.
@@ -235,7 +235,10 @@ export function findUnsupportedClientOutputFileNames(
       !value.startsWith(`${assetsDir}/`) && `outside "${assetsDir}/"`,
       !value.includes("[hash") && "no [hash]",
       key !== "assetFileNames" && !value.endsWith(".js") && 'not ".js"',
-      key === "assetFileNames" && !value.includes("[extname]") && "no [extname]",
+      key === "assetFileNames" &&
+        !value.endsWith("[extname]") &&
+        !value.endsWith(".[ext]") &&
+        "not ending in [extname]",
     ].filter(Boolean);
     if (problems.length > 0) {
       unsupported.push(`${key}: ${JSON.stringify(value)} (${problems.join(", ")})`);
