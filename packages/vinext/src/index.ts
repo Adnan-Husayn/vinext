@@ -323,6 +323,7 @@ import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import {
   consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
+  mayFoldChangeScannedImports,
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
@@ -7318,6 +7319,14 @@ export const loadServerActionClient = ${
         filter: { code: consumerEnvironmentConditionFilter },
         handler(code, id) {
           const scansImports = this.environment.config.build.write === false;
+          // Scans keep only import specifiers, which folding can change only by
+          // pruning a dynamic or phase import, or import.meta.glob. Only skip
+          // the fold when native define folding still covers write-less builds
+          // that are not plugin-RSC scans; Vite's define transform does not
+          // run for unbundled client environments.
+          const skipsUnobservableFold =
+            scansImports && useNativeTypeofWindowFolding && this.environment.config.isBundled;
+          if (skipsUnobservableFold && !mayFoldChangeScannedImports(code)) return null;
           const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
           const replaceProcessBrowser = scansImports;
           if (!replaceTypeofWindow && !replaceProcessBrowser) return null;
@@ -7328,7 +7337,7 @@ export const loadServerActionClient = ${
           const processBrowser = this.environment.config.consumer === "client";
           const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
             replaceProcessBrowser ? processBrowser : "-"
-          }`;
+          }:${skipsUnobservableFold ? "gated" : "full"}`;
           return omitUnusedBuildSourcemap(
             this.environment,
             cachedConsumerConditionTransform(id, code, variant, () =>
@@ -7338,6 +7347,7 @@ export const loadServerActionClient = ${
                   ...(replaceTypeofWindow ? { typeofWindow } : {}),
                   ...(replaceProcessBrowser ? { processBrowser } : {}),
                   pruneUnreachableImports: scansImports,
+                  onlyIfScannedImportsChange: skipsUnobservableFold,
                 },
                 id,
               ),
