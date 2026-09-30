@@ -10267,6 +10267,9 @@ export default function Page() { return <p>manifest reuse</p>; }
         const frameworkFile = Object.values(clientBuildManifest).find(
           (chunk) => chunk.name === "framework",
         )!.file!;
+        const vinextRuntimeFile = Object.values(clientBuildManifest).find(
+          (chunk) => chunk.name === "vinext",
+        )!.file!;
         // Model a large app without making the test compile thousands of pages.
         for (let i = 0; i < 3000; i++) {
           assets.ssrManifest[`components/unused-${i}.tsx`] = [frameworkFile];
@@ -10310,6 +10313,9 @@ export default function Page() { return <p>manifest reuse</p>; }
         expect(first).toContain("manifest reuse");
         expect(first).toContain('rel="stylesheet"');
         expect(first).toContain(frameworkFile);
+        // Hash-only names carry no chunk name; shared chunks still get tags
+        // through the registered build list, even for a caller's manifest copy.
+        expect(first).toContain(`src="/${vinextRuntimeFile}"`);
         expect(first).not.toContain("lazy-2999.js");
         const initialScans = { ...scans };
         // A caller-supplied manifest is indexed once for page lookups; shared
