@@ -24,7 +24,9 @@ const MAX_HOST_ENTRY_FILES = 64;
  * importer by id. A dependency is therefore kept only when it resolves into
  * node_modules both from its importer and from the root. Linked or workspace
  * packages, and packages the root cannot resolve, are skipped because they are
- * not discovered either.
+ * not discovered either. An importer outside node_modules (a linked adapter)
+ * has its own copy registered by Vite first, so its dependency is kept only
+ * when that copy is the root's.
  *
  * Only relative imports inside the entry's own package are followed. Type-only
  * imports, builtins, protocol ids, package imports, and imports of the owning
@@ -63,12 +65,10 @@ export function collectHostEntryOptimizeDepsIncludes(entry: string, root: string
       }
       if (includes.has(specifier)) continue;
       const packageName = packageNameFromSpecifier(specifier);
-      if (
-        packageName &&
-        packageName !== owner &&
-        isInstalledInNodeModules(path.dirname(file), packageName) &&
-        isInstalledInNodeModules(realRoot, packageName)
-      ) {
+      if (!packageName || packageName === owner) continue;
+      const importerCopy = findInstalledPackageDir(path.dirname(file), packageName);
+      const rootCopy = importerCopy && findInstalledPackageDir(realRoot, packageName);
+      if (rootCopy && (NODE_MODULES_PATH_RE.test(file) || importerCopy === rootCopy)) {
         includes.add(specifier);
       }
     }
@@ -134,18 +134,20 @@ function findOwningPackageName(file: string, owners: Map<string, string | null>)
 }
 
 /**
- * Whether `packageName` resolves from `directory` to a real directory inside
- * node_modules, walking up through node_modules directories like Node and Vite
- * do. Symlinks are followed, so linked packages do not count.
+ * Resolve `packageName` from `directory` to its real package directory,
+ * walking up through node_modules directories like Node and Vite do. Returns
+ * null unless that directory is inside node_modules, so linked packages do not
+ * count.
  */
-function isInstalledInNodeModules(directory: string, packageName: string): boolean {
+function findInstalledPackageDir(directory: string, packageName: string): string | null {
   while (true) {
     const packageDir = path.join(directory, "node_modules", packageName);
     if (fs.existsSync(path.join(packageDir, "package.json"))) {
-      return NODE_MODULES_PATH_RE.test(canonicalizeFilePath(packageDir));
+      const realPackageDir = canonicalizeFilePath(packageDir);
+      return NODE_MODULES_PATH_RE.test(realPackageDir) ? realPackageDir : null;
     }
     const parent = path.dirname(directory);
-    if (parent === directory) return false;
+    if (parent === directory) return null;
     directory = parent;
   }
 }

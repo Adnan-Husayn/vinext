@@ -213,6 +213,33 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     expect(collect(entry)).toEqual(["real-dep"]);
   });
 
+  it("keeps a linked adapter's dependency only when it shares the root's copy", () => {
+    // A linked adapter lives outside node_modules, so Vite registers its own
+    // copy before plugin-rsc re-resolves from the root. Only a root-form id
+    // for that same copy preserves what the adapter is served.
+    const adapterRoot = path.join(root, "packages", "linked-adapter");
+    fs.mkdirSync(path.join(adapterRoot, "dist"), { recursive: true });
+    fs.writeFileSync(
+      path.join(adapterRoot, "package.json"),
+      JSON.stringify({ name: "@adapter/linked" }),
+    );
+    fs.symlinkSync(adapterRoot, path.join(root, "node_modules", "@adapter", "linked"), "junction");
+    install("skewed-dep");
+    install("skewed-dep", adapterRoot);
+    // Both sides link to one store copy, as pnpm does.
+    const storeCopy = install("store-dep", path.join(root, "node_modules", ".pnpm", "store-dep"));
+    fs.symlinkSync(storeCopy, path.join(root, "node_modules", "store-dep"), "junction");
+    fs.symlinkSync(storeCopy, path.join(adapterRoot, "node_modules", "store-dep"), "junction");
+    fs.writeFileSync(
+      path.join(adapterRoot, "dist", "entry.js"),
+      ['import "skewed-dep";', 'import "store-dep";', 'import "real-dep";'].join("\n"),
+    );
+
+    expect(
+      collect(path.join(root, "node_modules", "@adapter", "linked", "dist", "entry.js")),
+    ).toEqual(["real-dep", "store-dep"]);
+  });
+
   it("does not require the adapter itself to resolve from the root", () => {
     const entry = write("entry.js", 'import "real-dep";\n');
     const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-host-entry-root-"));
