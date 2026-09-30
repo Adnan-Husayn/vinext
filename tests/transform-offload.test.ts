@@ -333,6 +333,21 @@ describe("pure transform offloading", () => {
     expect(resolvePureTransformWorkerCount()).toBe(0);
   });
 
+  it.each(["bun", "deno"])(
+    "does not offload under %s, whose workers ignore stackSizeMb",
+    (runtime) => {
+      vi.stubEnv("VINEXT_TRANSFORM_WORKERS", undefined);
+      vi.spyOn(os, "availableParallelism").mockReturnValue(16);
+      const versions = process.versions as Record<string, string | undefined>;
+      versions[runtime] = "1.0.0";
+      try {
+        expect(resolvePureTransformWorkerCount()).toBe(0);
+      } finally {
+        delete versions[runtime];
+      }
+    },
+  );
+
   it("runs inline without a pool", () => {
     const large = padToOffloadSize("const load = (name) => require(name);");
     const expected = transformVeryDynamicRequests(large, DEPENDENCY_ID);

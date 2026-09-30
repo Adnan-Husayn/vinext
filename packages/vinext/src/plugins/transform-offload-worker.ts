@@ -16,7 +16,8 @@ const pureTransforms = {
   "typeof-window": replaceConsumerEnvironmentConditions,
 };
 
-export type PureTransformKind = keyof typeof pureTransforms;
+export type PureTransforms = typeof pureTransforms;
+export type PureTransformKind = keyof PureTransforms;
 
 const port = parentPort;
 

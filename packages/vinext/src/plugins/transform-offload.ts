@@ -10,7 +10,7 @@
  * it saves.
  *
  * The pool is only an accelerator. Whenever it is unavailable (running from
- * source without a compiled worker entry, a single core,
+ * source without a compiled worker entry, a single core, Bun or Deno,
  * `VINEXT_TRANSFORM_WORKERS=0`) or a worker fails, the transform runs
  * in-process. A transform that throws on the worker is re-run in-process so
  * the caller sees the same error. The one exception is stack depth: workers
@@ -22,7 +22,7 @@ import os from "node:os";
 import { Worker } from "node:worker_threads";
 import { SourceMap } from "magic-string";
 import type { MagicStringTransformResult } from "./transform-result.js";
-import type { PureTransformKind } from "./transform-offload-worker.js";
+import type { PureTransformKind, PureTransforms } from "./transform-offload-worker.js";
 
 const OFFLOAD_MIN_SOURCE_LENGTH = 128 * 1024;
 const MAX_WORKERS = 2;
@@ -222,6 +222,9 @@ function workerResult<A extends PureTransformArgs>(
  */
 export function resolvePureTransformWorkerCount(): number {
   if (process.env.VINEXT_TRANSFORM_WORKERS === "0") return 0;
+  // Bun ignores `resourceLimits.stackSizeMb` (and Deno's support is unclear),
+  // so their workers crash on deeply nested modules; see `WORKER_STACK_SIZE_MB`.
+  if (process.versions.bun || process.versions.deno) return 0;
   return Math.max(0, Math.min(MAX_WORKERS, os.availableParallelism() - 1));
 }
 
@@ -242,12 +245,15 @@ function getSharedPool(): PureTransformPool {
  * process-wide worker pool when its input is large, otherwise inline. Returns
  * a promise only for offloaded inputs, so small modules stay synchronous.
  */
-export function runPureTransform<A extends PureTransformArgs>(
-  kind: PureTransformKind,
-  transform: (...args: A) => PureTransformResult,
-  args: A,
+export function runPureTransform<K extends PureTransformKind>(
+  kind: K,
+  transform: PureTransforms[K],
+  args: Parameters<PureTransforms[K]>,
   options: { sourcemap: boolean },
 ): PureTransformOutput {
-  if (args[0].length < OFFLOAD_MIN_SOURCE_LENGTH) return transform(...args);
-  return getSharedPool().run(kind, transform, args, options);
+  // The signature ties `transform` and `args` to the worker's entry for `kind`.
+  const run = transform as (...args: PureTransformArgs) => PureTransformResult;
+  const input = args as PureTransformArgs;
+  if (input[0].length < OFFLOAD_MIN_SOURCE_LENGTH) return run(...input);
+  return getSharedPool().run(kind, run, input, options);
 }
