@@ -58,7 +58,6 @@ import { mergeRewriteQuery } from "../utils/query.js";
 import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
-import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import type {
   AppPrerenderRootParamNamesMap,
@@ -254,6 +253,16 @@ function haveSameRequestCookies(
     if (second.get(name) !== value) return false;
   }
   return true;
+}
+
+function encodeDecodedPageParams(params: AppPageParams): AppPageParams {
+  const encoded: AppPageParams = {};
+  for (const [name, value] of Object.entries(params)) {
+    encoded[name] = Array.isArray(value)
+      ? value.map((part) => encodeURIComponent(part))
+      : encodeURIComponent(value);
+  }
+  return encoded;
 }
 
 function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolean {
@@ -1834,10 +1843,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionSourceMatch = rewrittenInterceptionSourceMatch;
         interceptionSourceContext = rewrittenSourceContext;
       }
-      // `matchRoute` returns canonical page params while the interception
-      // matcher returns them decoded, so compare both in canonical form.
-      const canonicalInterceptionSourceParams = { ...interceptionSourceMatch.params };
-      canonicalizeAppPageParams(canonicalInterceptionSourceParams);
+      // `matchRoute` returns canonical (encoded) page params while the
+      // interception matcher returns them decoded once, so encode those
+      // without decoding them again before comparing.
+      const canonicalInterceptionSourceParams = encodeDecodedPageParams(
+        interceptionSourceMatch.params,
+      );
       if (
         sourceMiddlewareResult.search !== sourceUrl.search ||
         rewrittenSourceMatch?.route !== interceptionSourceMatch.route ||
