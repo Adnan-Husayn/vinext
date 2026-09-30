@@ -188,7 +188,9 @@ export function createClientFileNameConfig(assetsDir: string) {
  * into the client environment, and a user-provided pattern wins.
  *
  * Returns null for array-shaped output, which cannot be augmented without Vite
- * concatenating a second output entry.
+ * concatenating a second output entry. Array-shaped client output is advanced
+ * config vinext doesn't support: Vite also appends vinext's own client output
+ * object (code splitting) to the user's array, producing an extra bundle.
  */
 export function createClientOutputFileNameDefaults(
   output: VinextBuildBundlerOptions["output"],
@@ -213,8 +215,12 @@ export function createClientOutputFileNameDefaults(
  * - without `[hash]`: everything under `assetsDir` is served
  *   `immutable`, so an unhashed URL would pin stale code for a year;
  * - JS not ending in `.js`: client metadata and Pages Router script
- *   tags only recognize `.js` chunks.
- * Function patterns cannot be checked statically.
+ *   tags only recognize `.js` chunks;
+ * - assets without `[extname]`: extensionless CSS is served as
+ *   `application/octet-stream` and rejected by browsers.
+ * This is a guard against common mistakes, not full validation: function
+ * patterns and array-shaped output are advanced config left to the user to
+ * keep within these rules.
  */
 export function findUnsupportedClientOutputFileNames(
   output: VinextBuildBundlerOptions["output"],
@@ -229,6 +235,7 @@ export function findUnsupportedClientOutputFileNames(
       !value.startsWith(`${assetsDir}/`) && `outside "${assetsDir}/"`,
       !value.includes("[hash") && "no [hash]",
       key !== "assetFileNames" && !value.endsWith(".js") && 'not ".js"',
+      key === "assetFileNames" && !value.includes("[extname]") && "no [extname]",
     ].filter(Boolean);
     if (problems.length > 0) {
       unsupported.push(`${key}: ${JSON.stringify(value)} (${problems.join(", ")})`);

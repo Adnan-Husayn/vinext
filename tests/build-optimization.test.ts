@@ -1894,7 +1894,7 @@ describe("treeshake config integration", () => {
               output: {
                 chunkFileNames: "[hash].js",
                 entryFileNames: () => "entry.js",
-                assetFileNames: "_next/static/media/[name][extname]",
+                assetFileNames: "_next/static/media/[name]",
               },
             },
           },
@@ -1907,7 +1907,9 @@ describe("treeshake config integration", () => {
       expect(warn).toHaveBeenCalledTimes(1);
       const message = String(warn.mock.calls[0]?.[0]);
       expect(message).toContain('chunkFileNames: "[hash].js" (outside "_next/static/")');
-      expect(message).toContain('assetFileNames: "_next/static/media/[name][extname]" (no [hash])');
+      expect(message).toContain(
+        'assetFileNames: "_next/static/media/[name]" (no [hash], no [extname])',
+      );
       expect(message).not.toContain("entryFileNames");
 
       warn.mockClear();

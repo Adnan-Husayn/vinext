@@ -5280,8 +5280,9 @@ export const loadServerActionClient = ${
             if (unsupported.length > 0) {
               console.warn(
                 `[vinext] Client output file names should stay under "${clientOutputFileNamesAssetsDir}/", ` +
-                  `include [hash] and emit ".js" chunks so asset URLs, immutable caching and ` +
-                  `script tags keep working: ${unsupported.join("; ")}`,
+                  `include [hash], emit ".js" chunks and keep asset [extname] so asset URLs, ` +
+                  `immutable caching, content types and script tags keep working: ` +
+                  unsupported.join("; "),
               );
             }
           }
