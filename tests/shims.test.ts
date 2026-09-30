@@ -11619,6 +11619,62 @@ describe("NextRequest API", () => {
     expect(reads).toBe(1);
   });
 
+  it("keeps method, headers and body when a Request is passed as init", async () => {
+    // Auth.js rebases the incoming request with `new NextRequest(url, request)` (reqWithEnvURL).
+    // Next.js hands `init` to the Request constructor as-is; the fields live on
+    // Request.prototype, so copying own properties would drop all of them:
+    // packages/next/src/server/web/spec-extension/request.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/request.ts
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const source = new Request("https://example.com/api/auth/signout", {
+      method: "POST",
+      headers: { cookie: "session=abc", "content-type": "application/x-www-form-urlencoded" },
+      body: "csrfToken=token",
+    });
+
+    const request = new NextRequest("https://auth.example.com/api/auth/signout", source);
+
+    expect(request.url).toBe("https://auth.example.com/api/auth/signout");
+    expect(request.method).toBe("POST");
+    expect(request.headers.get("cookie")).toBe("session=abc");
+    expect(request.cookies.get("session")?.value).toBe("abc");
+    expect(await request.text()).toBe("csrfToken=token");
+  });
+
+  it("rebases a NextRequest passed as init onto the new URL", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const source = new NextRequest("https://example.com/api/auth/callback?code=1", {
+      method: "POST",
+      headers: { cookie: "session=abc" },
+      body: "state=xyz",
+    });
+
+    const request = new NextRequest("https://auth.example.com/api/auth/callback?code=1", source);
+
+    expect(request.nextUrl.href).toBe("https://auth.example.com/api/auth/callback?code=1");
+    expect(request.nextUrl.searchParams.get("code")).toBe("1");
+    expect(request.method).toBe("POST");
+    expect(request.cookies.get("session")?.value).toBe("abc");
+    expect(await request.text()).toBe("state=xyz");
+  });
+
+  it("lets a Request init override a Request input", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const input = new Request("https://example.com/items", { headers: { "x-from": "input" } });
+    const init = new Request("https://example.com/other", {
+      method: "PUT",
+      headers: { "x-from": "init" },
+      body: "payload",
+    });
+
+    const request = new NextRequest(input, init);
+
+    expect(request.url).toBe("https://example.com/items");
+    expect(request.method).toBe("PUT");
+    expect(request.headers.get("x-from")).toBe("init");
+    expect(await request.text()).toBe("payload");
+  });
+
   it("throws canonical 'Please use only absolute URLs' error for relative URL input", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     // Matches Next.js's documented behaviour — middleware tests assert on this
