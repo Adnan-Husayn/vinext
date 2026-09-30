@@ -29,8 +29,10 @@ type PutOptions = {
   cloudflareCacheControl?: string;
   coalesce?: boolean;
   contentType?: string;
+  etag?: string;
   host?: string;
   largeHeaderBytes?: number;
+  lastModified?: string;
   noRevalidator?: boolean;
   purgeExisting?: boolean;
   revalidator?: Record<string, SerializableValue>;
@@ -110,6 +112,9 @@ beforeEach(async () => {
           CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
         },
         r2Buckets: { CACHE_BODIES: "programmatic-cache-test" },
+        serviceBindings: {
+          RESPONSE_STORE_BINDING: { name: "user-worker", entrypoint: "ResponseStoreBinding" },
+        },
         bindings: {
           CF_VERSION_METADATA: {
             id: "poc-v2",
@@ -135,6 +140,8 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
       options.cacheControl ?? "public, max-age=60, stale-while-revalidate=60",
   });
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
+  if (options.etag) headers.set("X-Response-ETag", options.etag);
+  if (options.lastModified) headers.set("X-Response-Last-Modified", options.lastModified);
   if (options.host) headers.set("X-Cache-Host", options.host);
   if (options.age !== undefined) headers.set("X-Response-Age", String(options.age));
   if (options.status !== undefined) headers.set("X-Response-Status", String(options.status));
@@ -180,6 +187,19 @@ async function read(
   if (options.host) headers.set("X-Cache-Host", options.host);
   if (options.shards) headers.set("X-Response-Store-Shards", String(options.shards));
   return worker.fetch(`https://user.test/cache${path}`, { headers });
+}
+
+// Miniflare does not run Workers Cache. Inject the header at the cache-bearing
+// entrypoint, where deployed Workers Cache adds it during revalidation.
+async function conditionalRead(path: string, header = "If-None-Match") {
+  const bindings = await mf.getBindings<{
+    RESPONSE_STORE_BINDING: Awaited<ReturnType<Miniflare["getWorker"]>>;
+  }>("user-worker");
+  return bindings.RESPONSE_STORE_BINDING.fetch(`https://cache-key.invalid${path}`, {
+    headers: {
+      [header]: header === "If-None-Match" ? 'W/"previous"' : "Tue, 29 Sep 2026 00:00:00 GMT",
+    },
+  });
 }
 
 async function refreshSelectors(options: ResponseStoreRefreshOptions, shards?: number) {
@@ -865,6 +885,65 @@ test("cache policy disables SWR when Workers Cache forbids stale serving", async
   );
 });
 
+test("stored responses advertise stable ETags that distinguish equal Last-Modified revisions", async () => {
+  const lastModified = "Tue, 29 Sep 2026 00:00:00 GMT";
+  await put("/validators", "first-body", { lastModified });
+  const first = await read("/validators");
+  const etag = first.headers.get("ETag");
+  assert.ok(etag);
+  assert.equal(first.headers.get("Last-Modified"), lastModified);
+  assert.equal((await read("/validators")).headers.get("ETag"), etag);
+
+  await put("/validators", "second-body", { lastModified });
+  const second = await read("/validators");
+  assert.equal(second.headers.get("Last-Modified"), lastModified);
+  assert.notEqual(second.headers.get("ETag"), etag);
+});
+
+test("stored responses preserve application validators", async () => {
+  const etag = '"application-etag"';
+  const lastModified = "Tue, 29 Sep 2026 00:00:00 GMT";
+  await put("/app-validators", "body", { etag, lastModified });
+  const response = await read("/app-validators");
+  assert.equal(response.headers.get("ETag"), etag);
+  assert.equal(response.headers.get("Last-Modified"), lastModified);
+});
+
+test.each(["If-None-Match", "If-Modified-Since"])(
+  "Workers Cache %s revalidation returns the committed fresh response",
+  async (header) => {
+    await put("/conditional-stale", "stale-body", {
+      cacheControl: "public, max-age=0, stale-while-revalidate=30",
+      revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 100 },
+    });
+
+    const response = await conditionalRead("/conditional-stale", header);
+    assert.equal(await response.text(), "fresh-body");
+    assert.equal(response.headers.get("X-Revalidation-Reason"), "swr");
+    assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+    assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "2");
+    assert.equal(await (await read("/conditional-stale")).text(), "fresh-body");
+    assert.equal(await metadataRowCount("pending_objects"), 0);
+  },
+);
+
+test("conditional reads reuse fresh backing responses without regenerating", async () => {
+  await put("/conditional-fresh", "fresh-body", { revalidator: { fail: true } });
+  const response = await conditionalRead("/conditional-fresh");
+  assert.equal(await response.text(), "fresh-body");
+  assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "1");
+});
+
+test("failed conditional revalidation does not return stale as a successful replacement", async () => {
+  await put("/conditional-failure", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "recovered", cacheControl: "public, max-age=60", failOnce: true },
+  });
+  await assert.rejects(conditionalRead("/conditional-failure"), /regeneration failure/);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+  assert.equal(await (await conditionalRead("/conditional-failure")).text(), "recovered");
+});
+
 test("stale R2 content returns immediately and deduplicates background regeneration", async () => {
   await put("/stale", "stale-body", {
     cacheControl: "public, max-age=0, stale-while-revalidate=30",
@@ -897,6 +976,69 @@ test("stale R2 content returns immediately and deduplicates background regenerat
     regenerationCount: number;
   };
   assert.equal(stats.regenerationCount, 1);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("conditional and unconditional stale reads share one regeneration claim", async () => {
+  await put("/conditional-claim", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 500 },
+  });
+
+  const first = conditionalRead("/conditional-claim");
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+  await assert.rejects(
+    conditionalRead("/conditional-claim"),
+    /revalidation is already in progress/,
+  );
+  assert.equal(await (await read("/conditional-claim")).text(), "stale-body");
+  assert.equal(await (await first).text(), "fresh-body");
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    regenerationCount: number;
+    maxConcurrentRegenerations: number;
+  };
+  assert.equal(stats.regenerationCount, 1);
+  assert.equal(stats.maxConcurrentRegenerations, 1);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("a superseded conditional revalidation never returns the old active body", async () => {
+  const path = "/conditional-lease-expiry";
+  await put(path, "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 500 },
+  });
+  const [entry] = await metadata();
+  const pending = conditionalRead(path);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+
+  // Advance the claim's clock without waiting 30 seconds or changing R2 age.
+  const stub = await metadataStub();
+  const replacement = await stub.claimRevalidation(
+    entry.keyHash,
+    entry.activeRevision,
+    entry.cacheKey,
+    `${r2Root}/${entry.keyHash}`,
+    Date.now() + 30_001,
+    30_000,
+  );
+  assert.ok(replacement);
+  await assert.rejects(pending, /revalidation is already in progress or was superseded/);
+  assert.equal((await metadata())[0].activeRevision, 1);
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+
+  await stub.releaseWrite(entry.keyHash, replacement.objectKey, replacement.claimId);
+  assert.equal(await (await conditionalRead(path)).text(), "fresh-body");
   assert.equal(await metadataRowCount("revalidation_claims"), 0);
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
