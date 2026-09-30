@@ -1697,6 +1697,17 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
       expectRewritten(transform.call(context(true), source, id));
     }
 
+    // A project module's `import(import.meta.url)` becomes its queryless file
+    // URL, a separate module from a queried id, so the scan keeps that edge.
+    const selfImport = "export const load = () => import(import.meta.url);\n";
+    const queriedResult = transform.call(context(false), selfImport, `${pagePath}?variant`);
+    expect(queriedResult).not.toBeNull();
+    expect(collectImportSpecifiers(queriedResult.code)).toEqual([
+      pathToFileURL(fs.realpathSync(pagePath)).href,
+    ]);
+    // Bundled dependency identities are getters, so dependencies still skip.
+    expect(transform.call(context(false), selfImport, cjsDependencyPath)).toBeNull();
+
     // Other write-less builds still receive the rewrites.
     manager.isScanBuild = false;
     for (const [source, id] of inputs) {

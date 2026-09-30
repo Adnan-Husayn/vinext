@@ -113,6 +113,10 @@ const SOURCE_IDENTITY_FILTER_RE = new RegExp(
   `${IMPORT_META_URL_CANDIDATE_PATTERN}|__filename|__dirname`,
   "u",
 );
+const DYNAMIC_IMPORT_CANDIDATE_RE = new RegExp(
+  String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\(`,
+  "u",
+);
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
   createEmittedModuleFileNameResolver?: (
@@ -255,9 +259,15 @@ export function createImportMetaUrlPlugin(options: {
         // plugin-rsc's write-less analysis builds reduce every module to its
         // import specifiers. These rewrites only replace expressions and add
         // `var` declarations (the runtime `node:*` imports are added to emitted
-        // chunks by renderChunk). The only specifier they can add is a module's
-        // own URL, from `import(import.meta.url)`, so the scanned graph is the same.
-        if (rscManager?.isScanBuild && this.environment?.config.build.write === false) {
+        // chunks by renderChunk). The only specifier they can add is the
+        // canonical file URL from a project module's `import(import.meta.url)`,
+        // which is a separate module when the id has a query, so keep those.
+        const isRscScanBuild =
+          rscManager?.isScanBuild === true && this.environment?.config.build.write === false;
+        if (
+          isRscScanBuild &&
+          !(mayContainImportMetaUrl(code) && DYNAMIC_IMPORT_CANDIDATE_RE.test(code))
+        ) {
           return null;
         }
 
@@ -270,6 +280,8 @@ export function createImportMetaUrlPlugin(options: {
             (mayContainImportMetaUrl(code) ||
               (dependency.isCommonJs && mayContainServerCjsGlobal(code)))
           ) {
+            // Bundled dependency identities are getters, never import specifiers.
+            if (isRscScanBuild) return null;
             return omitUnusedBuildSourcemap(
               this.environment,
               rewriteDependencyModuleIdentity(
