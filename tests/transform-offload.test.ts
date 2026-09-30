@@ -18,7 +18,6 @@ const WORKER_SOURCE = path.resolve(
   "../packages/vinext/src/plugins/transform-offload-worker.ts",
 );
 const OFFLOAD_MIN_SOURCE_LENGTH = 128 * 1024;
-const SPAWN_MIN_SOURCE_LENGTH = 1024 * 1024;
 const DEPENDENCY_ID = path.resolve("/app/node_modules/pkg/index.js");
 
 let tempDir: string;
@@ -34,18 +33,13 @@ function writeWorker(name: string, source: string): URL {
 }
 
 function createPool(workerUrl: URL, minSourceLength = 0): PureTransformPool {
-  const pool = createPureTransformPool({
-    workerUrl,
-    size: 2,
-    minSourceLength,
-    spawnMinSourceLength: minSourceLength,
-  });
+  const pool = createPureTransformPool({ workerUrl, size: 2, minSourceLength });
   pools.push(pool);
   return pool;
 }
 
-function padToSpawnSize(code: string): string {
-  return `${code}\n/*${"x".repeat(SPAWN_MIN_SOURCE_LENGTH)}*/\n`;
+function padToOffloadSize(code: string): string {
+  return `${code}\n/*${"x".repeat(OFFLOAD_MIN_SOURCE_LENGTH)}*/\n`;
 }
 
 beforeAll(() => {
@@ -71,12 +65,7 @@ beforeAll(() => {
       await import(${JSON.stringify(pathToFileURL(WORKER_SOURCE).href)});
     `,
   );
-  sourcePool = createPureTransformPool({
-    workerUrl: sourceWorkerUrl,
-    size: 2,
-    minSourceLength: 0,
-    spawnMinSourceLength: 0,
-  });
+  sourcePool = createPureTransformPool({ workerUrl: sourceWorkerUrl, size: 2, minSourceLength: 0 });
 });
 
 afterAll(async () => {
@@ -208,7 +197,7 @@ describe("pure transform offloading", () => {
     expect(inProcess).toHaveBeenCalledOnce();
   });
 
-  it("starts a worker only for sources at or above the spawn threshold", async () => {
+  it("offloads only sources at or above the size threshold", async () => {
     const workerUrl = writeWorker(
       "length-worker.mjs",
       `
@@ -221,48 +210,28 @@ describe("pure transform offloading", () => {
     const inProcess = vi.fn(() => ({ code: "in-process", map: null as never }));
     const pool = createPureTransformPool({ workerUrl, size: 1 });
     pools.push(pool);
-    const run = (length: number) =>
-      pool.run("typeof-window", inProcess, ["x".repeat(length)], { sourcemap: true });
-    const inline = { code: "in-process", map: null };
+    const small = "x".repeat(OFFLOAD_MIN_SOURCE_LENGTH - 1);
+    const large = "x".repeat(OFFLOAD_MIN_SOURCE_LENGTH);
 
-    // Below the offload threshold, and below the spawn threshold with no
-    // worker running, sources stay inline.
-    expect(run(OFFLOAD_MIN_SOURCE_LENGTH - 1)).toEqual(inline);
-    expect(run(SPAWN_MIN_SOURCE_LENGTH - 1)).toEqual(inline);
-    expect(inProcess).toHaveBeenCalledTimes(2);
-
-    const large = run(SPAWN_MIN_SOURCE_LENGTH);
-    expect(large).toBeInstanceOf(Promise);
-    // A smaller source does not queue behind the busy worker.
-    expect(run(OFFLOAD_MIN_SOURCE_LENGTH)).toEqual(inline);
-    expect((await large)?.code).toBe(String(SPAWN_MIN_SOURCE_LENGTH));
-    expect(inProcess).toHaveBeenCalledTimes(3);
-
-    // Once a worker is running and idle, it takes sources above the offload
-    // threshold.
-    const reused = run(OFFLOAD_MIN_SOURCE_LENGTH);
-    expect(reused).toBeInstanceOf(Promise);
-    expect((await reused)?.code).toBe(String(OFFLOAD_MIN_SOURCE_LENGTH));
-    expect(run(OFFLOAD_MIN_SOURCE_LENGTH - 1)).toEqual(inline);
-    expect(inProcess).toHaveBeenCalledTimes(4);
-
-    const custom = createPureTransformPool({
-      workerUrl,
-      size: 1,
-      minSourceLength: 5,
-      spawnMinSourceLength: 10,
+    expect(pool.run("typeof-window", inProcess, [small], { sourcemap: true })).toEqual({
+      code: "in-process",
+      map: null,
     });
-    pools.push(custom);
-    expect(custom.run("typeof-window", inProcess, ["123456789"], { sourcemap: true })).toEqual(
-      inline,
-    );
+    expect(inProcess).toHaveBeenCalledOnce();
+
+    const offloaded = pool.run("typeof-window", inProcess, [large], { sourcemap: true });
+    expect(offloaded).toBeInstanceOf(Promise);
+    expect((await offloaded)?.code).toBe(String(OFFLOAD_MIN_SOURCE_LENGTH));
+    expect(inProcess).toHaveBeenCalledOnce();
+
+    const custom = createPool(workerUrl, 10);
+    expect(custom.run("typeof-window", inProcess, ["123456789"], { sourcemap: true })).toEqual({
+      code: "in-process",
+      map: null,
+    });
     await expect(
       custom.run("typeof-window", inProcess, ["1234567890"], { sourcemap: true }),
     ).resolves.toMatchObject({ code: "10" });
-    await expect(
-      custom.run("typeof-window", inProcess, ["12345"], { sourcemap: true }),
-    ).resolves.toMatchObject({ code: "5" });
-    expect(custom.run("typeof-window", inProcess, ["1234"], { sourcemap: true })).toEqual(inline);
   });
 
   it("re-runs a transform that fails on the worker in-process", async () => {
@@ -380,7 +349,7 @@ describe("pure transform offloading", () => {
   );
 
   it("runs inline without a pool", () => {
-    const large = padToSpawnSize("const load = (name) => require(name);");
+    const large = padToOffloadSize("const load = (name) => require(name);");
     const expected = transformVeryDynamicRequests(large, DEPENDENCY_ID);
     const pool = createPureTransformPool({ workerUrl: sourceWorkerUrl, size: 0 });
     pools.push(pool);
