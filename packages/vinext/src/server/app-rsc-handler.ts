@@ -59,6 +59,7 @@ import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
+import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import type {
   AppPrerenderRootParamNamesMap,
   AppPrerenderStaticParamsMap,
@@ -204,7 +205,12 @@ function decodeInterceptionSourcePathname(context: string): string {
   return sourcePathname;
 }
 
+/**
+ * Whether a server-derived context satisfies the whole inbound header
+ * contract, so the client can send it back unchanged on its next request.
+ */
 function isValidInterceptionSourceContext(context: string): boolean {
+  if (normalizeInterceptionContextHeader(context) !== context) return false;
   try {
     decodeInterceptionSourcePathname(context);
     return true;

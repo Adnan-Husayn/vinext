@@ -5185,9 +5185,12 @@ describe("createAppRscHandler", () => {
   });
 
   // The re-resolved source becomes the context the client sends back, so a
-  // rewrite the raw header contract would reject (here a non-canonical `//`)
-  // keeps the raw match, which the exact rewrite check then rejects.
-  it("does not re-resolve the interception source from a non-canonical rewrite", async () => {
+  // rewrite the inbound header contract would reject (non-canonical, or over
+  // the length cap) keeps the raw match, which the exact rewrite check rejects.
+  it.each([
+    ["a non-canonical", "/en//feed"],
+    ["an over-length", `/en/feed/${"a".repeat(1024)}`],
+  ])("does not re-resolve the interception source from %s rewrite", async (_label, rewritten) => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
     const feedRoute = createPageRoute({
@@ -5204,7 +5207,7 @@ describe("createAppRscHandler", () => {
         if (sourcePathname === "/feed") {
           return { route: localeRootRoute, params: { locale: "feed" } };
         }
-        if (sourcePathname === "/en//feed") {
+        if (sourcePathname === rewritten) {
           return { route: feedRoute, params: { locale: "en" } };
         }
         return null;
@@ -5213,7 +5216,7 @@ describe("createAppRscHandler", () => {
         if (pathname === "/photos/1") {
           return { params: {} as Record<string, string | string[]>, route: targetRoute };
         }
-        if (pathname === "/en//feed") {
+        if (pathname === rewritten) {
           return {
             params: { locale: "en" } as Record<string, string | string[]>,
             route: feedRoute,
@@ -5225,7 +5228,7 @@ describe("createAppRscHandler", () => {
         default(request: NextRequest) {
           return request.nextUrl.pathname === "/feed"
             ? new Response(null, {
-                headers: { "x-middleware-rewrite": "https://example.test/docs/en//feed" },
+                headers: { "x-middleware-rewrite": `https://example.test/docs${rewritten}` },
               })
             : new Response(null, { headers: { "x-middleware-next": "1" } });
         },
@@ -5238,7 +5241,7 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(404);
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
-    expect(interceptSources).not.toContain("/en//feed");
+    expect(interceptSources).not.toContain(rewritten);
   });
 
   it.each([
