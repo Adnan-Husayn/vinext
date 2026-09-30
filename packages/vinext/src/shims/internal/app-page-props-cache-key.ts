@@ -16,7 +16,7 @@ const USE_CACHE_SERVER_REFERENCE_ID_RE = /#\$\$vinext_cache_[0-9a-f]{64}$/;
  * props before a server component is invoked.
  */
 export const APP_PAGE_USE_CACHE_MARKER = "$$isPage";
-export const APP_LAYOUT_USE_CACHE_MARKER = "$$isLayout";
+const APP_LAYOUT_USE_CACHE_MARKER = "$$isLayout";
 // The enumerable marker survives React.createElement, while its private value
 // retains a parallel slot with the same name until the cache wrapper admits it.
 const layoutMarkerSlots = new WeakMap<object, [] | [unknown]>();
@@ -109,7 +109,7 @@ export function withoutUseCacheSegmentMarker(
 ): Record<string, unknown> {
   const marker = isPage ? APP_PAGE_USE_CACHE_MARKER : APP_LAYOUT_USE_CACHE_MARKER;
   const originalSlot = isPage ? undefined : getLayoutMarkerSlot(props[marker]);
-  if (!originalSlot && props[marker] !== true) return props;
+  if (isPage ? props[marker] !== true : originalSlot === undefined) return props;
   const segmentProps = { ...props };
   if (originalSlot?.length) segmentProps[marker] = originalSlot[0];
   else delete segmentProps[marker];
@@ -131,8 +131,8 @@ function hasUseCacheSegmentMarker(
   const prototype = Object.getPrototypeOf(value);
   return (
     (prototype === Object.prototype || prototype === null) &&
-    ((value as Record<string, unknown>)[marker] === true ||
-      (marker === APP_LAYOUT_USE_CACHE_MARKER &&
-        !!getLayoutMarkerSlot((value as Record<string, unknown>)[marker])))
+    (marker === APP_LAYOUT_USE_CACHE_MARKER
+      ? getLayoutMarkerSlot((value as Record<string, unknown>)[marker]) !== undefined
+      : (value as Record<string, unknown>)[marker] === true)
   );
 }

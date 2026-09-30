@@ -6,7 +6,10 @@ import {
   replayCachedFunction,
 } from "../packages/vinext/src/shims/cache-runtime.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
-import { withUseCacheLayoutMarker } from "../packages/vinext/src/shims/internal/app-page-props-cache-key.js";
+import {
+  withUseCacheLayoutMarker,
+  withUseCachePageMarker,
+} from "../packages/vinext/src/shims/internal/app-page-props-cache-key.js";
 import {
   resolveModuleMetadata,
   resolveModuleViewport,
@@ -29,6 +32,61 @@ beforeEach(() => setCacheHandler(new MemoryCacheHandler()));
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
 // See isPageSegmentFunction/isLayoutSegmentFunction and their outerParams wrappers.
 describe("use cache framework props", () => {
+  // Only the framework's layout invocation can opt into params restoration.
+  // Next's segment handling is described in use-cache-wrapper.ts above; an
+  // ordinary argument must retain its Flight-encoded fields and cache key.
+  it("preserves an ordinary true-valued $$isLayout field without adding params", async () => {
+    const fn = vi.fn(async (props: Record<string, unknown>) => ({
+      props,
+      hasParams: Object.hasOwn(props, "params"),
+    }));
+    const cached = registerCachedFunction(fn, "ordinary-layout-field");
+    const input = { $$isLayout: true, value: "ordinary" };
+    expect(await cached(input)).toEqual({ props: input, hasParams: false });
+    expect(await cached({ ...input })).toEqual({ props: input, hasParams: false });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keys ordinary true-valued $$isLayout fields separately from absent fields", async () => {
+    const fn = vi.fn(async (props: Record<string, unknown>) => props);
+    const cached = registerCachedFunction(fn, "ordinary-layout-field-key");
+    await cached({ value: "ordinary" });
+    await cached({ value: "ordinary", $$isLayout: true });
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(await cached({ value: "ordinary", $$isLayout: true })).toEqual({
+      value: "ordinary",
+      $$isLayout: true,
+    });
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays ordinary true-valued $$isLayout fields without framework metadata", async () => {
+    const handler = new MemoryCacheHandler();
+    const set = vi.spyOn(handler, "set");
+    setCacheHandler(handler);
+    const payloads: CacheFlightArguments[] = [];
+    const fn = vi.fn(async (props: Record<string, unknown>) => ({ ...props }));
+    const cached = registerCachedFunction(fn, "ordinary-layout-field-replay", "", {
+      serverReferenceId: "ordinary-layout-field-replay",
+      encodeInvocation: async (args) => {
+        payloads.push(args);
+        return "encrypted";
+      },
+    });
+    const input = { $$isLayout: true, value: "ordinary" };
+    await cached(input);
+    expect(payloads[0]?.layoutPropsIndex).toBeUndefined();
+    expect(payloads[0]?.pagePropsIndex).toBeUndefined();
+    const replayHandler = new MemoryCacheHandler();
+    const replaySet = vi.spyOn(replayHandler, "set");
+    setCacheHandler(replayHandler);
+    expect(await replayCachedFunction(cached, payloads[0]!)).toEqual(input);
+    expect(replaySet.mock.calls[0]?.[0]).toBe(set.mock.calls[0]?.[0]);
+    expect(await cached({ ...input })).toEqual(input);
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenLastCalledWith(input);
+  });
+
   // Parallel route slots are layout props. Next preserves outerSlots after
   // removing its layout marker, but currently overwrites a $$isLayout slot:
   // https://github.com/vercel/next.js/blob/v16.3.7/packages/next/src/server/app-render/create-component-tree.tsx#L1046
@@ -146,6 +204,7 @@ describe("use cache framework props", () => {
   // https://github.com/vercel/next.js/blob/v16.3.7/packages/next/src/server/use-cache/use-cache-wrapper.ts#L2037
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.params.test.ts
   describe.each(["$$isPage", "$$isLayout"])("fallback params for %s", (marker) => {
+    const markProps = marker === "$$isLayout" ? withUseCacheLayoutMarker : withUseCachePageMarker;
     it.each(["unused", "await-only", "known-key"])(
       "does not suspend when params are %s",
       async (access) => {
@@ -171,13 +230,14 @@ describe("use cache framework props", () => {
 
         try {
           const result = runWithPprFallbackShellState(state, () =>
-            cached({
-              params: makeThenableParams(
-                { locale: "en", slug: "[slug]" },
-                { observeParamAccess: (keys) => observed.push([...keys]) },
-              ),
-              [marker]: true,
-            }),
+            cached(
+              markProps(cached, {
+                params: makeThenableParams(
+                  { locale: "en", slug: "[slug]" },
+                  { observeParamAccess: (keys) => observed.push([...keys]) },
+                ),
+              }),
+            ),
           );
           await expect(result).resolves.toBe(access === "known-key" ? "en" : "ready");
           expect(state.hasDynamicBoundary).toBe(false);
@@ -203,7 +263,7 @@ describe("use cache framework props", () => {
       const cached = registerCachedFunction(fn, `fallback-collision:${marker}`, "", {
         argumentCount: 1,
       });
-      const props = () => ({ params: makeThenableParams({ slug: "[slug]" }), [marker]: true });
+      const props = () => markProps(cached, { params: makeThenableParams({ slug: "[slug]" }) });
       expect(await cached(props())).toBe("[slug]");
       expect(set).toHaveBeenCalledTimes(1);
       get.mockClear();
@@ -235,7 +295,7 @@ describe("use cache framework props", () => {
         async ({ params }: { params: Promise<{ slug: string }> }) => (await params).slug,
       );
       const cached = registerCachedFunction(fn, `unbranded-fallback:${marker}`);
-      const props = () => ({ params: Promise.resolve({ slug: "[slug]" }), [marker]: true });
+      const props = () => markProps(cached, { params: Promise.resolve({ slug: "[slug]" }) });
       expect(await cached(props())).toBe("[slug]");
 
       const state = createPprFallbackShellState({
@@ -249,7 +309,7 @@ describe("use cache framework props", () => {
         setCacheHandler(new MemoryCacheHandler());
         expect(await runWithPprFallbackShellState(state, () => cached(props()))).toBe("[slug]");
         expect(fn).toHaveBeenCalledTimes(2);
-        // Public markers alone do not confer the factory's fallback metadata.
+        // Invocation markers alone do not confer the factory's fallback metadata.
         expect(state.hasDynamicBoundary).toBe(false);
       } finally {
         state.abortController.abort();
@@ -260,6 +320,7 @@ describe("use cache framework props", () => {
   it.each(["$$isPage", "$$isLayout"])(
     "discards unused %s props before restoration",
     async (marker) => {
+      const markProps = marker === "$$isLayout" ? withUseCacheLayoutMarker : withUseCachePageMarker;
       let payload: CacheFlightArguments | undefined;
       const fn = vi.fn(async () => "rendered");
       const cached = registerCachedFunction(fn, `no-args:${marker}`, "", {
@@ -272,17 +333,17 @@ describe("use cache framework props", () => {
       });
       const call = (slug: string) =>
         Reflect.apply(cached, null, [
-          {
+          markProps(cached, {
             params: makeThenableParams({ slug }),
             searchParams: Promise.resolve({ query: slug }),
-            [marker]: true,
-          },
+          }),
         ]);
       expect(await call("first")).toBe("rendered");
       expect(await call("second")).toBe("rendered");
       expect(fn).toHaveBeenCalledTimes(1);
       expect(fn).toHaveBeenCalledWith();
       expect(payload?.pagePropsIndex).toBeUndefined();
+      expect(payload?.layoutPropsIndex).toBeUndefined();
       setCacheHandler(new MemoryCacheHandler());
       expect(await replayCachedFunction(cached, payload!)).toBe("rendered");
       expect(fn).toHaveBeenCalledTimes(2);
@@ -318,12 +379,13 @@ describe("use cache framework props", () => {
     });
     const child = createElement("p", null, "child");
     const call = (slug: string) =>
-      cached({
-        params: makeThenableParams({ slug }),
-        children: child,
-        sidebar: "slot",
-        $$isLayout: true,
-      } as Parameters<typeof cached>[0]);
+      cached(
+        withUseCacheLayoutMarker(cached, {
+          params: makeThenableParams({ slug }),
+          children: child,
+          sidebar: "slot",
+        }),
+      );
     expect(await call("first")).toEqual({
       sync: "first",
       async: "first",
@@ -334,6 +396,8 @@ describe("use cache framework props", () => {
     expect((await call("second")).sync).toBe("second");
     expect((await call("first")).sync).toBe("first");
     expect(fn).toHaveBeenCalledTimes(2);
+    expect(payloads[0]?.layoutPropsIndex).toBe(0);
+    expect(payloads[0]?.pagePropsIndex).toBeUndefined();
     const replayHandler = new MemoryCacheHandler();
     const replaySet = vi.spyOn(replayHandler, "set");
     setCacheHandler(replayHandler);
