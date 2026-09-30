@@ -1660,6 +1660,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // The `configEnvironment` defaults plugin then fills in client file names the
   // user left unset, so a user's entry/chunk/asset file names win.
   let clientOutputFileNamesAssetsDir: string | null = null;
+  // Plain Pages builds (no App Router, Cloudflare or Nitro) used to seed their
+  // SSR environment from vinext's top-level client output. Keep that SSR
+  // naming as defaults: SSR-emitted asset URLs must match the client's.
+  let plainPagesSsrFileNamesAssetsDir: string | null = null;
   let hasCloudflarePlugin = false;
   let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
@@ -3220,6 +3224,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           shouldInjectPlainPagesEnvironments
             ? clientAssetsDir
             : null;
+        plainPagesSsrFileNamesAssetsDir =
+          !isMultiEnv && shouldInjectPlainPagesEnvironments ? clientAssetsDir : null;
         const devHmrConfig =
           config.server?.hmr === false
             ? false
@@ -5295,19 +5301,33 @@ export const loadServerActionClient = ${
             },
           };
         }
-        if (!hasAppDir || (name !== "rsc" && name !== "ssr")) return null;
+        const plainPagesSsrAssetsDir = name === "ssr" ? plainPagesSsrFileNamesAssetsDir : null;
+        if (!(hasAppDir && (name === "rsc" || name === "ssr")) && !plainPagesSsrAssetsDir) {
+          return null;
+        }
         const output = getBuildBundlerOptions(config.build)?.output;
         // Vite concatenates arrays returned from config hooks rather than
         // merging output entries by index, so an array-shaped user config
         // cannot be safely augmented here. Preserve it unchanged.
-        if (Array.isArray(output) || output?.assetFileNames !== undefined) return null;
-        const assetFileNames = createClientAssetFileNames(
-          resolveAssetsDir(nextConfig.assetPrefix ?? ""),
-        );
+        if (Array.isArray(output)) return null;
+        const serverFileNameDefaults = {
+          ...(output?.assetFileNames === undefined
+            ? {
+                assetFileNames: createClientAssetFileNames(
+                  resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+                ),
+              }
+            : {}),
+          // Server chunk names are never public, so they keep `[name]`.
+          ...(plainPagesSsrAssetsDir && output?.chunkFileNames === undefined
+            ? { chunkFileNames: `${plainPagesSsrAssetsDir}/chunks/[name]-[hash].js` }
+            : {}),
+        };
+        if (Object.keys(serverFileNameDefaults).length === 0) return null;
         return {
           build: {
             ...withBuildBundlerOptions({
-              output: { assetFileNames },
+              output: serverFileNameDefaults,
             }),
           },
         };

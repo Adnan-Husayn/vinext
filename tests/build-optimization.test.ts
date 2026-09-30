@@ -1932,6 +1932,28 @@ describe("treeshake config integration", () => {
         'entryFileNames: "_next/static/chunks/[hash].mjs" (not ".js")',
       );
       expect(String(warn.mock.calls[0]?.[0])).not.toContain("chunkFileNames");
+
+      // Plain Pages SSR keeps the server naming it used to inherit from the
+      // top-level client output, as defaults that yield to user config.
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
+      ).toEqual({
+        build: {
+          rolldownOptions: {
+            output: {
+              assetFileNames: expect.any(Function),
+              chunkFileNames: "_next/static/chunks/[name]-[hash].js",
+            },
+          },
+        },
+      });
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          { build: { rolldownOptions: { output: { chunkFileNames: "server/[name].js" } } } },
+          { command: "build" },
+        ).build.rolldownOptions.output,
+      ).toEqual({ assetFileNames: expect.any(Function) });
     } finally {
       warn.mockRestore();
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

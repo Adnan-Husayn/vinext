@@ -172,7 +172,7 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
   };
 }
 
-export function createClientFileNameConfig(assetsDir: string) {
+function createClientFileNameConfig(assetsDir: string) {
   const chunksDir = `${assetsDir}/chunks`;
   return {
     entryFileNames: `${chunksDir}/[name]-[hash].js`,
