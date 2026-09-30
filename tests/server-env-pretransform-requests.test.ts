@@ -68,6 +68,21 @@ describe("dev.preTransformRequests for server environments", () => {
     ).resolves.toEqual({ rsc: false, ssr: true });
   });
 
+  it("respects an explicit top-level dev.preTransformRequests", async () => {
+    await expect(
+      resolveServerPreTransformRequests({ dev: { preTransformRequests: false } }),
+    ).resolves.toEqual({ rsc: false, ssr: false });
+  });
+
+  it("prefers top-level dev.preTransformRequests over server.preTransformRequests", async () => {
+    await expect(
+      resolveServerPreTransformRequests({
+        dev: { preTransformRequests: false },
+        server: { preTransformRequests: true },
+      }),
+    ).resolves.toEqual({ rsc: false, ssr: false });
+  });
+
   it("respects an explicit top-level server.preTransformRequests", async () => {
     await expect(
       resolveServerPreTransformRequests({ server: { preTransformRequests: false } }),

@@ -3849,13 +3849,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // import only when they request it, serialising transform/evaluate
           // round-trips on the first request. The runners evaluate every
           // static import anyway, so this only moves transforms earlier.
-          // An explicit environment or `server.preTransformRequests` wins.
+          // An explicit environment, top-level `dev` or
+          // `server.preTransformRequests` setting wins, in Vite's precedence.
           const getServerDevOptions = (name: "rsc" | "ssr") =>
             env.command === "serve"
               ? {
                   dev: {
                     preTransformRequests:
                       config.environments?.[name]?.dev?.preTransformRequests ??
+                      config.dev?.preTransformRequests ??
                       config.server?.preTransformRequests ??
                       true,
                   },
