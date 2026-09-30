@@ -15,10 +15,40 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     return file;
   }
 
+  function install(name: string, directory = root): string {
+    const dependencyRoot = path.join(directory, "node_modules", name);
+    fs.mkdirSync(dependencyRoot, { recursive: true });
+    fs.writeFileSync(path.join(dependencyRoot, "package.json"), JSON.stringify({ name }));
+    return dependencyRoot;
+  }
+
+  function collect(entry: string): string[] {
+    return collectHostEntryOptimizeDepsIncludes(entry, root)
+      .map((id) => id.replace(/^@adapter\/platform > /, ""))
+      .sort();
+  }
+
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-host-entry-deps-"));
     packageRoot = path.join(root, "node_modules", "@adapter", "platform");
     write("package.json", JSON.stringify({ name: "@adapter/platform", type: "module" }));
+    for (const name of [
+      "@scope/store",
+      "all-lib",
+      "side-effect-dep",
+      "stage-lib",
+      "vinext",
+      "empty-specifiers",
+      "mixed-specifiers",
+      "real-dep",
+      "inside-dep",
+      "outside-dep",
+      "entry-dep",
+      "cycle-dep",
+      "broken-dep",
+    ]) {
+      install(name);
+    }
   });
 
   afterEach(() => {
@@ -44,7 +74,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     write("lib/stage.js", 'export { stage } from "stage-lib/runtime";\n');
     write("dist/all.js", 'export * from "all-lib";\nimport { store } from "@scope/store";\n');
 
-    expect(collectHostEntryOptimizeDepsIncludes(entry).sort()).toEqual([
+    expect(collect(entry)).toEqual([
       "@scope/store",
       "all-lib",
       "side-effect-dep",
@@ -68,10 +98,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
       ].join("\n"),
     );
 
-    expect(collectHostEntryOptimizeDepsIncludes(entry).sort()).toEqual([
-      "empty-specifiers",
-      "mixed-specifiers",
-    ]);
+    expect(collect(entry)).toEqual(["empty-specifiers", "mixed-specifiers"]);
   });
 
   it("skips builtins, protocol and virtual ids, package imports, and self-imports", () => {
@@ -91,7 +118,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
       ].join("\n"),
     );
 
-    expect(collectHostEntryOptimizeDepsIncludes(entry)).toEqual(["real-dep"]);
+    expect(collect(entry)).toEqual(["real-dep"]);
   });
 
   it("does not follow relative imports that leave the owning package", () => {
@@ -104,7 +131,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
       'import "../../other-package/index.js";\nimport "inside-dep";\n',
     );
 
-    expect(collectHostEntryOptimizeDepsIncludes(entry)).toEqual(["inside-dep"]);
+    expect(collect(entry)).toEqual(["inside-dep"]);
   });
 
   it("tolerates missing files, cycles, and unparsable modules", () => {
@@ -122,7 +149,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     write("broken.js", 'import "broken-dep";\nexport const = ;\n');
     write("data.json", "{}");
 
-    expect(collectHostEntryOptimizeDepsIncludes(entry).sort()).toEqual(["cycle-dep", "entry-dep"]);
+    expect(collect(entry)).toEqual(["cycle-dep", "entry-dep"]);
   });
 
   it("caps the number of visited files", () => {
@@ -132,10 +159,52 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
       write(`file-${index}.js`, `${next}import "dep-${index}";\n`);
     }
 
-    const includes = collectHostEntryOptimizeDepsIncludes(path.join(packageRoot, "file-0.js"));
+    for (let index = 0; index < fileCount; index++) install(`dep-${index}`);
+
+    const includes = collect(path.join(packageRoot, "file-0.js"));
     expect(includes).toHaveLength(64);
     expect(includes).toContain("dep-0");
     expect(includes).toContain("dep-63");
     expect(includes).not.toContain("dep-64");
+  });
+
+  it("emits nested includes so dependencies resolve from the adapter package", () => {
+    // The adapter depends on its own copy, which differs from the app's.
+    install("skewed-dep");
+    install("skewed-dep", packageRoot);
+    const entry = write("entry.js", 'import "skewed-dep";\nimport "real-dep/subpath";\n');
+
+    expect(collectHostEntryOptimizeDepsIncludes(entry, root).sort()).toEqual([
+      "@adapter/platform > real-dep/subpath",
+      "@adapter/platform > skewed-dep",
+    ]);
+  });
+
+  it("skips dependencies that are missing or resolve outside node_modules", () => {
+    const linkedRoot = path.join(root, "packages", "linked-dep");
+    fs.mkdirSync(linkedRoot, { recursive: true });
+    fs.writeFileSync(path.join(linkedRoot, "package.json"), JSON.stringify({ name: "linked-dep" }));
+    fs.symlinkSync(linkedRoot, path.join(root, "node_modules", "linked-dep"), "junction");
+    const entry = write(
+      "entry.js",
+      'import "linked-dep";\nimport "missing-dep";\nimport "real-dep";\n',
+    );
+
+    expect(collect(entry)).toEqual(["real-dep"]);
+  });
+
+  it("returns nothing when the adapter does not resolve to itself from the root", () => {
+    const entry = write("entry.js", 'import "real-dep";\n');
+    const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-host-entry-root-"));
+    try {
+      // Unresolvable from the root: Vite would resolve the dependency from the
+      // root instead.
+      expect(collectHostEntryOptimizeDepsIncludes(entry, otherRoot)).toEqual([]);
+      // Resolves to a different copy of the adapter.
+      install("@adapter/platform", otherRoot);
+      expect(collectHostEntryOptimizeDepsIncludes(entry, otherRoot)).toEqual([]);
+    } finally {
+      fs.rmSync(otherRoot, { recursive: true, force: true });
+    }
   });
 });

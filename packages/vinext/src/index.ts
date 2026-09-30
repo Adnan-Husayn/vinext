@@ -4254,26 +4254,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const optionalWarnings = new Set<string>();
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
-            // The multi-stage host-entry transform re-exports the adapter's
-            // Worker entry, which the rsc scanner never sees. Without these, the
-            // first Worker import re-optimizes and reloads before dev is ready.
             const optionalIncludes = hasAppDir
               ? name === "client" && !optimizer.noDiscovery
                 ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                : name === "rsc" &&
+                : // rsc: the multi-stage host-entry transform re-exports the
+                  // adapter's Worker entry, which the scanner never sees.
+                  // Without these, the first Worker import re-optimizes and
+                  // reloads before dev is ready.
+                  name === "rsc" &&
                     hasCloudflarePlugin &&
                     !optimizer.noDiscovery &&
-                    typeof matchedMultiStageOutput?.entry === "string"
-                  ? collectHostEntryOptimizeDepsIncludes(matchedMultiStageOutput.entry)
+                    matchedMultiStageOutput
+                  ? collectHostEntryOptimizeDepsIncludes(matchedMultiStageOutput.entry, config.root)
                   : []
               : name !== "client"
                 ? ["use-sync-external-store/with-selector"]
                 : [];
             for (const id of optionalIncludes) {
+              // Host-entry includes use Vite's nested `owner > dependency` form.
+              const dependency = id.slice(id.lastIndexOf(">") + 1).trim();
               if (
                 optimizer.include?.includes(id) ||
+                optimizer.include?.includes(dependency) ||
                 optimizer.exclude?.some(
-                  (excluded) => id === excluded || id.startsWith(`${excluded}/`),
+                  (excluded) => dependency === excluded || dependency.startsWith(`${excluded}/`),
                 )
               ) {
                 continue;
