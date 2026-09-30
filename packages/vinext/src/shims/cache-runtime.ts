@@ -62,12 +62,12 @@ import {
 } from "./ppr-fallback-shell.js";
 import {
   APP_PAGE_USE_CACHE_MARKER,
-  APP_LAYOUT_USE_CACHE_MARKER,
   hasUseCachePageMarker,
   hasUseCacheLayoutMarker,
   isMarkedAppPagePropsObject,
   isUseCacheFunctionReference,
   markAppPagePropsForUseCache,
+  withoutUseCacheSegmentMarker,
 } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
 import {
@@ -710,6 +710,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               segmentPropsIndex,
               withoutUseCacheSegmentMarker(
                 limitedArgs[segmentPropsIndex] as Record<string, unknown>,
+                isPageInvocation,
               ),
             )
           : limitedArgs;
@@ -748,7 +749,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             ? serializationArgs
             : toReplayablePageArgs(serializationArgs, pagePropsIndex).map((arg, index) =>
                 index === pagePropsIndex
-                  ? withoutUseCacheSegmentMarker(arg as Record<string, unknown>)
+                  ? withoutUseCacheSegmentMarker(arg as Record<string, unknown>, true)
                   : arg,
               );
         flightArguments =
@@ -1621,17 +1622,6 @@ function replaceArgument(args: readonly unknown[], index: number, value: unknown
   const result = [...args];
   result[index] = value;
   return result;
-}
-
-/** Remove framework invocation markers before props reach the key or user code. */
-function withoutUseCacheSegmentMarker(props: Record<string, unknown>): Record<string, unknown> {
-  const {
-    [APP_PAGE_USE_CACHE_MARKER]: _page,
-    [APP_LAYOUT_USE_CACHE_MARKER]: _layout,
-    ...pageProps
-  } = props;
-  // Keep the page probe's non-enumerable marker, which the spread drops.
-  return isMarkedAppPagePropsObject(props) ? markAppPagePropsForUseCache(pageProps) : pageProps;
 }
 
 /**

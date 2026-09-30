@@ -793,6 +793,11 @@ describe("use cache production argument isolation", () => {
       path.join(APP_FIXTURE_DIR, "app", "api", "use-cache-arguments", "route.ts"),
       path.join(root, "app", "api", "check", "route.ts"),
     );
+    fs.cpSync(
+      path.join(APP_FIXTURE_DIR, "app", "use-cache-slot-markers"),
+      path.join(root, "app", "use-cache-slot-markers"),
+      { recursive: true },
+    );
     const builder = await createBuilder({
       root,
       configFile: false,
@@ -820,6 +825,19 @@ describe("use cache production argument isolation", () => {
     expect(response.status).toBe(200);
     return response.json();
   }
+
+  it("preserves parallel slots named like cache markers in a cached layout", async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await handler(new Request("http://localhost/use-cache-slot-markers"));
+      expect(response).toBeInstanceOf(Response);
+      if (!(response instanceof Response)) throw new Error("Expected a response");
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain("<p>layout marker slot content</p>");
+      expect(html).toContain("<p>page marker slot content</p>");
+      expect(html).toContain("<p>cached layout with marker-named slots</p>");
+    }
+  });
 
   for (const reverse of [false, true]) {
     it.each([
