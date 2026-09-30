@@ -41,7 +41,7 @@ type DevStackMiddleware = (req: IncomingMessage, res: ServerResponse, next: () =
 
 function createServer(
   sourceMap: SourceMapPayload | null = SOURCE_MAP,
-  options: { root?: string } = {},
+  options: { root?: string; ssr?: boolean; loadedFiles?: Record<string, string[]> } = {},
 ): {
   server: ViteDevServer;
   transformRequests: string[];
@@ -49,20 +49,22 @@ function createServer(
 } {
   const transformRequests: string[] = [];
   const middlewareHandlers: DevStackMiddleware[] = [];
+  const createEnvironment = (name: string) => ({
+    moduleGraph: {
+      getModulesByFile(file: string) {
+        return options.loadedFiles?.[name]?.includes(file) ? new Set([{ file }]) : undefined;
+      },
+    },
+    async transformRequest(viteUrl: string) {
+      transformRequests.push(`${name}:${viteUrl}`);
+      return { map: sourceMap };
+    },
+  });
   const server = {
     environments: {
-      client: {
-        async transformRequest(viteUrl: string) {
-          transformRequests.push(`client:${viteUrl}`);
-          return { map: sourceMap };
-        },
-      },
-      rsc: {
-        async transformRequest(viteUrl: string) {
-          transformRequests.push(`rsc:${viteUrl}`);
-          return { map: sourceMap };
-        },
-      },
+      client: createEnvironment("client"),
+      rsc: createEnvironment("rsc"),
+      ...(options.ssr ? { ssr: createEnvironment("ssr") } : {}),
     },
     config: {
       root: options.root ?? "/repo/app",
@@ -554,6 +556,49 @@ describe("mapStackLine", () => {
       ),
     ).resolves.toBe(line);
     expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
+  });
+
+  it("maps local filesystem frames through the environment that loaded the file", async () => {
+    // rsc/ssr pre-transform static imports in dev, so transforming an
+    // SSR-only module in the RSC environment would also transform its imports
+    // there and could log spurious pre-transform errors.
+    const { server, transformRequests } = createServer(
+      { sources: ["site-footer.tsx"], mappings: ";;;;;;;;AAKQ" },
+      { ssr: true, loadedFiles: { ssr: ["/repo/app/app/_components/site-footer.tsx"] } },
+    );
+    const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
+
+    const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
+    await expect(
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
+    ).resolves.toBe(`    at SiteFooter (${mappedFileUrl}:6:9)`);
+    expect(transformRequests).toEqual(["ssr:/repo/app/app/_components/site-footer.tsx"]);
+  });
+
+  it("falls back to the other server environments when the loaded one has no source map", async () => {
+    const { server, transformRequests } = createServer(null, {
+      ssr: true,
+      loadedFiles: { ssr: ["/repo/app/app/_components/site-footer.tsx"] },
+    });
+    const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
+
+    await expect(
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
+    ).resolves.toBe(line);
+    expect(transformRequests).toEqual([
+      "ssr:/repo/app/app/_components/site-footer.tsx",
+      "rsc:/repo/app/app/_components/site-footer.tsx",
+    ]);
   });
 
   it("maps React Server component frame URLs through the RSC environment source map", async () => {

@@ -3844,6 +3844,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
             } catch {}
           }
+          // Vite pre-transforms static imports only in the client environment
+          // by default. Without it, the rsc/ssr module runners transform each
+          // import only when they request it, serialising transform/evaluate
+          // round-trips on the first request. The runners evaluate every
+          // static import anyway, so this only moves transforms earlier.
+          // An explicit environment or `server.preTransformRequests` wins.
+          const getServerDevOptions = (name: "rsc" | "ssr") =>
+            env.command === "serve"
+              ? {
+                  dev: {
+                    preTransformRequests:
+                      config.environments?.[name]?.dev?.preTransformRequests ??
+                      config.server?.preTransformRequests ??
+                      true,
+                  },
+                }
+              : {};
           const appClientInput: Record<string, string> = { index: VIRTUAL_APP_BROWSER_ENTRY };
           if (hasPagesDir) {
             appClientInput["vinext-client-entry"] = VIRTUAL_CLIENT_ENTRY;
@@ -3902,6 +3919,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ],
                 ...depOptimizeNodeEnvOptions,
               },
+              ...getServerDevOptions("rsc"),
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
                 ...withBuildBundlerOptions({
@@ -3974,6 +3992,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 entries: optimizeEntries,
                 ...depOptimizeNodeEnvOptions,
               },
+              ...getServerDevOptions("ssr"),
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
                 ...withBuildBundlerOptions({
