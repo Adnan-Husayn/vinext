@@ -283,7 +283,7 @@ import {
 import {
   createClientOutputFileNameDefaults,
   findUnsupportedClientOutputFileNames,
-  getOutputAssetFileNames,
+  getOutputFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
@@ -1665,12 +1665,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // SSR environment from vinext's top-level client output. Keep that SSR
   // naming as defaults: SSR-emitted asset URLs must match the client's.
   let plainPagesSsrFileNamesAssetsDir: string | null = null;
-  // User `assetFileNames` from `environments.client`, and the environments
-  // that declare their own. Server environments are seeded from top-level
-  // `build` only, so a client-environment override must be copied onto them:
-  // server-emitted asset URLs have to match the files the client build writes.
-  let clientEnvironmentAssetFileNames: ReturnType<typeof getOutputAssetFileNames>;
-  let environmentsWithOwnAssetFileNames = new Set<string>();
+  // User file names from top-level `build` and each `environments.<name>`,
+  // captured before Vite seeds every environment from top-level `build`.
+  // Top-level names are client naming: server environments that only inherited
+  // them are reset, and a client-environment asset name is copied onto them so
+  // server-emitted asset URLs match the files the client build writes.
+  let topLevelFileNames: ReturnType<typeof getOutputFileNames> = {};
+  let environmentFileNames: Record<string, ReturnType<typeof getOutputFileNames>> = {};
   let hasCloudflarePlugin = false;
   let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
@@ -3233,17 +3234,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : null;
         plainPagesSsrFileNamesAssetsDir =
           !isMultiEnv && shouldInjectPlainPagesEnvironments ? clientAssetsDir : null;
-        environmentsWithOwnAssetFileNames = new Set(
-          Object.entries(config.environments ?? {})
-            .filter(
-              ([, environment]) =>
-                getOutputAssetFileNames(getBuildBundlerOptions(environment?.build)?.output) !==
-                undefined,
-            )
-            .map(([environmentName]) => environmentName),
-        );
-        clientEnvironmentAssetFileNames = getOutputAssetFileNames(
-          getBuildBundlerOptions(config.environments?.client?.build)?.output,
+        topLevelFileNames = getOutputFileNames(getBuildBundlerOptions(config.build)?.output);
+        environmentFileNames = Object.fromEntries(
+          Object.entries(config.environments ?? {}).map(([environmentName, environment]) => [
+            environmentName,
+            getOutputFileNames(getBuildBundlerOptions(environment?.build)?.output),
+          ]),
         );
         const devHmrConfig =
           config.server?.hmr === false
@@ -5329,23 +5325,35 @@ export const loadServerActionClient = ${
         // merging output entries by index, so an array-shaped user config
         // cannot be safely augmented here. Preserve it unchanged.
         if (Array.isArray(output)) return null;
-        // A client-environment override replaces a name this environment only
-        // inherited from top-level `build`; its own declared name is kept.
         // Names added by later plugins' config hooks aren't seen here; such
-        // setups should set matching asset names on every environment.
+        // setups should set matching file names on every environment.
+        const ownFileNames = environmentFileNames[name] ?? {};
+        const inheritsTopLevel = (key: "entryFileNames" | "chunkFileNames") =>
+          ownFileNames[key] === undefined &&
+          topLevelFileNames[key] !== undefined &&
+          output?.[key] === topLevelFileNames[key];
+        const clientAssetFileNames = environmentFileNames.client?.assetFileNames;
         const serverAssetFileNames =
-          !environmentsWithOwnAssetFileNames.has(name) &&
-          clientEnvironmentAssetFileNames !== undefined
-            ? clientEnvironmentAssetFileNames
+          ownFileNames.assetFileNames === undefined && clientAssetFileNames !== undefined
+            ? clientAssetFileNames
             : output?.assetFileNames === undefined
               ? createClientAssetFileNames(resolveAssetsDir(nextConfig.assetPrefix ?? ""))
               : undefined;
+        // Server chunk names are never public, so they keep `[name]`. Inherited
+        // top-level names return to Vite's SSR defaults so fixed server entry
+        // paths (dist/server/index.js, ssr/index.js) still exist.
+        const serverChunkFileNames =
+          output?.chunkFileNames === undefined || inheritsTopLevel("chunkFileNames")
+            ? plainPagesSsrAssetsDir
+              ? `${plainPagesSsrAssetsDir}/chunks/[name]-[hash].js`
+              : output?.chunkFileNames === undefined
+                ? undefined
+                : `${config.build?.assetsDir ?? "assets"}/[name]-[hash].js`
+            : undefined;
         const serverFileNameDefaults = {
           ...(serverAssetFileNames !== undefined ? { assetFileNames: serverAssetFileNames } : {}),
-          // Server chunk names are never public, so they keep `[name]`.
-          ...(plainPagesSsrAssetsDir && output?.chunkFileNames === undefined
-            ? { chunkFileNames: `${plainPagesSsrAssetsDir}/chunks/[name]-[hash].js` }
-            : {}),
+          ...(serverChunkFileNames !== undefined ? { chunkFileNames: serverChunkFileNames } : {}),
+          ...(inheritsTopLevel("entryFileNames") ? { entryFileNames: "[name].js" } : {}),
         };
         if (Object.keys(serverFileNameDefaults).length === 0) return null;
         return {

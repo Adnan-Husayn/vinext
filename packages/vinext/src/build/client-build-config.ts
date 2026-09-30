@@ -208,11 +208,13 @@ export function createClientOutputFileNameDefaults(
   };
 }
 
-/** `assetFileNames` from a (non-array) bundler output config. */
-export function getOutputAssetFileNames(
+/** Entry, chunk and asset file names from a (non-array) bundler output config. */
+export function getOutputFileNames(
   output: VinextBuildBundlerOptions["output"],
-): VinextBuildOutput["assetFileNames"] {
-  return Array.isArray(output) ? undefined : output?.assetFileNames;
+): Pick<VinextBuildOutput, "entryFileNames" | "chunkFileNames" | "assetFileNames"> {
+  if (!output || Array.isArray(output)) return {};
+  const { entryFileNames, chunkFileNames, assetFileNames } = output;
+  return { entryFileNames, chunkFileNames, assetFileNames };
 }
 
 /**
