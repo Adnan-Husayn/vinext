@@ -300,6 +300,20 @@ export class StaticFileCache {
  */
 export function etagFromFilenameHash(relativePath: string, ext: string): string | null {
   const basename = path.basename(relativePath, ext);
+  const normalizedPath = toSlash(relativePath);
+  const isInManagedDir = (dir: string) => {
+    const segment = `${ASSET_PREFIX_URL_DIR}/${dir}/`;
+    return normalizedPath.startsWith(segment) || normalizedPath.includes(`/${segment}`);
+  };
+
+  // vinext's default client JS and CSS names are hash-only
+  // (`chunks/[hash].js`, `css/[hash].css`). Rolldown's 8-char base64url hash
+  // can itself contain `-`, so match the whole basename before the
+  // `name-<hash>` split below would take only a fragment of it.
+  if ((isInManagedDir("chunks") || isInManagedDir("css")) && /^[A-Za-z0-9_-]{8}$/.test(basename)) {
+    return `W/"${basename}"`;
+  }
+
   const lastDash = basename.lastIndexOf("-");
   if (lastDash !== -1 && lastDash !== basename.length - 1) {
     const suffix = basename.slice(lastDash + 1);
@@ -314,12 +328,7 @@ export function etagFromFilenameHash(relativePath: string, ext: string): string 
   // `_next/static/media/name.<sha256-8>.<ext>`. Restrict this alternate form
   // to that managed directory so arbitrary static files such as
   // `_next/static/config.deadbeef.json` cannot receive a stale hash ETag.
-  const normalizedPath = toSlash(relativePath);
-  const managedMediaSegment = `${ASSET_PREFIX_URL_DIR}/media/`;
-  const isManagedMedia =
-    normalizedPath.startsWith(managedMediaSegment) ||
-    normalizedPath.includes(`/${managedMediaSegment}`);
-  if (isManagedMedia) {
+  if (isInManagedDir("media")) {
     const lastDot = basename.lastIndexOf(".");
     if (lastDot !== -1) {
       const suffix = basename.slice(lastDot + 1);
