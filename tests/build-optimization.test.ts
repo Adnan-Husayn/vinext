@@ -1359,6 +1359,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     { name: "without the Cloudflare plugin", cloudflare: false, expected: [] as string[] },
     { name: "unmatched multi-stage output", matchesBuild: false, expected: [] as string[] },
     { name: "rsc noDiscovery", rsc: { noDiscovery: true }, expected: [] as string[] },
+    { name: "rsc preserveSymlinks", preserveSymlinks: true, expected: [] as string[] },
     {
       name: "rsc exclusion",
       rsc: { exclude: ["helper-dep"] },
@@ -1423,7 +1424,10 @@ describe("optimizeDeps.exclude for vinext", () => {
         },
         { command },
       );
-      const rscConfig = mergeConfig(config.environments.rsc, { optimizeDeps: options.rsc ?? {} });
+      const rscConfig = mergeConfig(config.environments.rsc, {
+        optimizeDeps: options.rsc ?? {},
+        resolve: { preserveSymlinks: options.preserveSymlinks ?? false },
+      });
       const ssrConfig = mergeConfig(config.environments.ssr, {});
       const warned: string[] = [];
       const logger = createLogger("silent");

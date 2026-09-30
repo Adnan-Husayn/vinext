@@ -4257,12 +4257,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // rsc: the multi-stage host-entry transform re-exports the
             // adapter's Worker entry, which the scanner never sees. Without
             // these, the first Worker import re-optimizes and reloads before
-            // dev is ready.
+            // dev is ready. The copy checks compare real paths, so they are
+            // skipped when preserveSymlinks keeps symlinked copies distinct.
             const hostEntryIncludes =
               hasAppDir &&
               name === "rsc" &&
               hasCloudflarePlugin &&
               !optimizer.noDiscovery &&
+              !environment.resolve.preserveSymlinks &&
               matchedMultiStageOutput
                 ? collectHostEntryOptimizeDepsIncludes(matchedMultiStageOutput.entry, config.root)
                 : null;
