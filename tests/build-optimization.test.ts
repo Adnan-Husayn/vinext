@@ -1875,6 +1875,46 @@ describe("treeshake config integration", () => {
             .output as Record<string, unknown>;
           expect(envOutput.assetFileNames).toBe("_next/static/media/[hash][extname]");
         }
+
+        // A client-environment override also replaces an inherited top-level
+        // name, while an explicit server-environment name is kept.
+        const layeredBuilder = await createBuilder({
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+          build: {
+            rolldownOptions: {
+              output: { assetFileNames: "_next/static/media/top-[hash][extname]" },
+            },
+          },
+          environments: {
+            client: {
+              build: {
+                rolldownOptions: {
+                  output: { assetFileNames: "_next/static/media/client-[hash][extname]" },
+                },
+              },
+            },
+            ssr: {
+              build: {
+                rolldownOptions: {
+                  output: { assetFileNames: "_next/static/media/ssr-[hash][extname]" },
+                },
+              },
+            },
+          },
+        });
+        const layeredAssetFileNames = (name: string) =>
+          (
+            layeredBuilder.environments[name].config.build.rolldownOptions.output as Record<
+              string,
+              unknown
+            >
+          ).assetFileNames;
+        expect(layeredAssetFileNames("client")).toBe("_next/static/media/client-[hash][extname]");
+        expect(layeredAssetFileNames("rsc")).toBe("_next/static/media/client-[hash][extname]");
+        expect(layeredAssetFileNames("ssr")).toBe("_next/static/media/ssr-[hash][extname]");
       } finally {
         await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }

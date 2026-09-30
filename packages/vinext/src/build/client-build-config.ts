@@ -208,13 +208,8 @@ export function createClientOutputFileNameDefaults(
   };
 }
 
-/**
- * `assetFileNames` from a user's `environments.client` output. Server
- * environments are seeded from top-level `build` only, so without this they
- * would embed vinext's default asset URLs while the client emits the files
- * elsewhere.
- */
-export function getClientEnvironmentAssetFileNames(
+/** `assetFileNames` from a (non-array) bundler output config. */
+export function getOutputAssetFileNames(
   output: VinextBuildBundlerOptions["output"],
 ): VinextBuildOutput["assetFileNames"] {
   return Array.isArray(output) ? undefined : output?.assetFileNames;
