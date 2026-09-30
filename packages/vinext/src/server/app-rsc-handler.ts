@@ -182,6 +182,37 @@ type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
 
+/**
+ * Decode an interception context to the canonical source pathname it names.
+ * Throws for any value the client could not send back as its context header.
+ */
+function decodeInterceptionSourcePathname(context: string): string {
+  if (!isInterceptionMatchedUrlPath(context)) {
+    throw new Error("Invalid interception source pathname");
+  }
+  const decodedSourcePathname = normalizePathnameForRouteMatchStrict(context);
+  if (/[\t\n\r]/.test(decodedSourcePathname)) {
+    throw new Error("Interception source contains a stripped URL character");
+  }
+  if (hasUrlParserDotSegment(decodedSourcePathname)) {
+    throw new Error("Interception source contains a URL dot segment");
+  }
+  const sourcePathname = normalizePath(decodedSourcePathname);
+  if (sourcePathname !== decodedSourcePathname) {
+    throw new Error("Non-canonical interception source pathname");
+  }
+  return sourcePathname;
+}
+
+function isValidInterceptionSourceContext(context: string): boolean {
+  try {
+    decodeInterceptionSourcePathname(context);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
     (condition) =>
@@ -859,21 +890,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   let interceptionSourcePathname: string | null = null;
   if (isRscRequest && interceptionContextHeader !== null) {
     try {
-      if (!isInterceptionMatchedUrlPath(interceptionContextHeader)) {
-        throw new Error("Invalid interception source pathname");
-      }
-      const decodedInterceptionSourcePathname =
-        normalizePathnameForRouteMatchStrict(interceptionContextHeader);
-      if (/[\t\n\r]/.test(decodedInterceptionSourcePathname)) {
-        throw new Error("Interception source contains a stripped URL character");
-      }
-      if (hasUrlParserDotSegment(decodedInterceptionSourcePathname)) {
-        throw new Error("Interception source contains a URL dot segment");
-      }
-      interceptionSourcePathname = normalizePath(decodedInterceptionSourcePathname);
-      if (interceptionSourcePathname !== decodedInterceptionSourcePathname) {
-        throw new Error("Non-canonical interception source pathname");
-      }
+      interceptionSourcePathname = decodeInterceptionSourcePathname(interceptionContextHeader);
     } catch {
       options.clearRequestContext();
       setInterceptionResponseUncacheable(true);
@@ -1795,13 +1812,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // source the middleware did not route the claimed source to. The
       // rewritten pathname is a URL pathname, so it is percent-encoded like the
       // raw context and the matcher's single decode applies to it unchanged.
+      // It becomes the context the client sends back, so it must satisfy the
+      // same contract as the raw header; otherwise keep the raw match.
       const rewrittenSourceContext = sourceMiddlewareResult.cleanPathname;
-      const rewrittenInterceptionSourceMatch =
-        options.matchInterceptRoute?.(
-          preActionRoutePathname,
-          rewrittenSourceContext,
-          interceptionIdHeader,
-        ) ?? null;
+      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(
+        rewrittenSourceContext,
+      )
+        ? (options.matchInterceptRoute?.(
+            preActionRoutePathname,
+            rewrittenSourceContext,
+            interceptionIdHeader,
+          ) ?? null)
+        : null;
       if (rewrittenInterceptionSourceMatch !== null) {
         interceptionSourceMatch = rewrittenInterceptionSourceMatch;
         interceptionSourceContext = rewrittenSourceContext;
