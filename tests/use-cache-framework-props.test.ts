@@ -12,6 +12,10 @@ import {
 } from "../packages/vinext/src/shims/metadata.js";
 import type { CacheFlightArguments } from "../packages/vinext/src/shims/cache-flight-arguments.js";
 import { probeAppPageLayoutWithTracking } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import {
+  createPprFallbackShellState,
+  runWithPprFallbackShellState,
+} from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
 vi.mock("@vitejs/plugin-rsc/react/rsc", async () => {
   const { loadCacheFlightCodec } = await import("./helpers/cache-flight-codec.js");
@@ -24,6 +28,122 @@ beforeEach(() => setCacheHandler(new MemoryCacheHandler()));
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
 // See isPageSegmentFunction/isLayoutSegmentFunction and their outerParams wrappers.
 describe("use cache framework props", () => {
+  // Next.js reinjects outerParams for cached segments so unused fallback keys
+  // do not block them. Its params tests distinguish awaiting from key access:
+  // https://github.com/vercel/next.js/blob/v16.3.7/packages/next/src/server/use-cache/use-cache-wrapper.ts#L2037
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.params.test.ts
+  describe.each(["$$isPage", "$$isLayout"])("fallback params for %s", (marker) => {
+    it.each(["unused", "await-only", "known-key"])(
+      "does not suspend when params are %s",
+      async (access) => {
+        const handler = new MemoryCacheHandler();
+        const get = vi.spyOn(handler, "get");
+        const set = vi.spyOn(handler, "set");
+        setCacheHandler(handler);
+        const observed: string[][] = [];
+        const state = createPprFallbackShellState({
+          fallbackParamNames: ["slug"],
+          routePattern: "/:locale/:slug",
+        });
+        const cached = registerCachedFunction(
+          async ({ params }: { params: Promise<{ locale: string; slug: string }> }) => {
+            if (access === "unused") return "ready";
+            const resolved = await params;
+            return access === "known-key" ? resolved.locale : "ready";
+          },
+          `fallback:${marker}:${access}`,
+          "",
+          { argumentCount: 1 },
+        );
+
+        try {
+          const result = runWithPprFallbackShellState(state, () =>
+            cached({
+              params: makeThenableParams(
+                { locale: "en", slug: "[slug]" },
+                { observeParamAccess: (keys) => observed.push([...keys]) },
+              ),
+              [marker]: true,
+            }),
+          );
+          await expect(result).resolves.toBe(access === "known-key" ? "en" : "ready");
+          expect(state.hasDynamicBoundary).toBe(false);
+          expect(observed).toEqual(access === "known-key" ? [["locale"]] : []);
+          // Placeholder params are incomplete and must not read or populate a
+          // concrete route's data entry, or persist an unguarded replay.
+          expect(get).not.toHaveBeenCalled();
+          expect(set).not.toHaveBeenCalled();
+        } finally {
+          state.abortController.abort();
+        }
+      },
+    );
+
+    it("does not reuse a concrete placeholder-named route for a fallback key read", async () => {
+      const handler = new MemoryCacheHandler();
+      const get = vi.spyOn(handler, "get");
+      const set = vi.spyOn(handler, "set");
+      setCacheHandler(handler);
+      const fn = vi.fn(
+        async ({ params }: { params: Promise<{ slug: string }> }) => (await params).slug,
+      );
+      const cached = registerCachedFunction(fn, `fallback-collision:${marker}`, "", {
+        argumentCount: 1,
+      });
+      const props = () => ({ params: makeThenableParams({ slug: "[slug]" }), [marker]: true });
+      expect(await cached(props())).toBe("[slug]");
+      expect(set).toHaveBeenCalledTimes(1);
+      get.mockClear();
+      set.mockClear();
+
+      const state = createPprFallbackShellState({
+        fallbackParamNames: ["slug"],
+        routePattern: "/:slug",
+      });
+      try {
+        const suspended = await runWithPprFallbackShellState(state, () =>
+          cached(props()).then(
+            () => false,
+            (error: unknown) => error instanceof Promise,
+          ),
+        );
+        expect(suspended).toBe(true);
+        expect(state.hasDynamicBoundary).toBe(true);
+        expect(fn).toHaveBeenCalledTimes(2);
+        expect(get).not.toHaveBeenCalled();
+        expect(set).not.toHaveBeenCalled();
+      } finally {
+        state.abortController.abort();
+      }
+    });
+
+    it("keeps unbranded params consistent on warm and cold fallback-scope calls", async () => {
+      const fn = vi.fn(
+        async ({ params }: { params: Promise<{ slug: string }> }) => (await params).slug,
+      );
+      const cached = registerCachedFunction(fn, `unbranded-fallback:${marker}`);
+      const props = () => ({ params: Promise.resolve({ slug: "[slug]" }), [marker]: true });
+      expect(await cached(props())).toBe("[slug]");
+
+      const state = createPprFallbackShellState({
+        fallbackParamNames: ["slug"],
+        routePattern: "/:slug",
+      });
+      try {
+        expect(await runWithPprFallbackShellState(state, () => cached(props()))).toBe("[slug]");
+        expect(fn).toHaveBeenCalledTimes(1);
+
+        setCacheHandler(new MemoryCacheHandler());
+        expect(await runWithPprFallbackShellState(state, () => cached(props()))).toBe("[slug]");
+        expect(fn).toHaveBeenCalledTimes(2);
+        // Public markers alone do not confer the factory's fallback metadata.
+        expect(state.hasDynamicBoundary).toBe(false);
+      } finally {
+        state.abortController.abort();
+      }
+    });
+  });
+
   it.each(["$$isPage", "$$isLayout"])(
     "discards unused %s props before restoration",
     async (marker) => {

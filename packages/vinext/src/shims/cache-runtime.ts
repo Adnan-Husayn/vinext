@@ -51,7 +51,11 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { isDraftModeEnabled, markDynamicUsage, throwIfInsideCacheScope } from "./headers.js";
-import { makeThenableParams } from "./thenable-params.js";
+import {
+  makeThenableParams,
+  getFallbackParamsSnapshot,
+  restoreThenableParams,
+} from "./thenable-params.js";
 import {
   createPprFallbackShellSuspensePromise,
   trackPprFallbackShellCacheTask,
@@ -712,6 +716,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const executionArgs = hasCaptureEnvelope
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
+      const outerParams =
+        !replay && segmentPropsIndex !== -1
+          ? (executionArgs[segmentPropsIndex] as Record<string, unknown>).params
+          : undefined;
+      const fallbackParams = getFallbackParamsSnapshot(outerParams);
+      const serializationArgs = fallbackParams
+        ? replaceArgument(executionArgs, segmentPropsIndex, {
+            ...(executionArgs[segmentPropsIndex] as Record<string, unknown>),
+            params: fallbackParams,
+          })
+        : executionArgs;
       const pagePropsIndex =
         omitAppPageSearchParams && isPageInvocation ? pagePropsArgIndex : undefined;
       // Rendered page props carry searchParams that throw inside a public cache
@@ -730,8 +745,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         // same multipart snapshot, including native File metadata.
         const keyArgs =
           pagePropsIndex === undefined
-            ? executionArgs
-            : toReplayablePageArgs(executionArgs, pagePropsIndex).map((arg, index) =>
+            ? serializationArgs
+            : toReplayablePageArgs(serializationArgs, pagePropsIndex).map((arg, index) =>
                 index === pagePropsIndex
                   ? withoutUseCacheSegmentMarker(arg as Record<string, unknown>)
                   : arg,
@@ -756,22 +771,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         callArgs = (await rsc.decodeReply(restoreFlightReply(flightArguments), {
           temporaryReferences: serverReferences,
         })) as TArgs;
-        if (segmentPropsIndex !== -1) {
-          const props = callArgs[segmentPropsIndex] as Record<string, unknown>;
-          callArgs = replaceArgument(callArgs, segmentPropsIndex, {
-            ...props,
-            params: makeThenableParams((await props.params) as Record<string, string | string[]>),
-          }) as TArgs;
-          if (pagePropsIndex !== undefined) {
-            callArgs = withErroringPageSearchParams(callArgs, pagePropsIndex) as TArgs;
-          }
-        }
       } else {
         // Non-RSC environments support the existing JSON subset only.
         try {
           const pending: Promise<unknown>[] = [];
           const prepared = prepareCacheArguments(
-            executionArgs,
+            serializationArgs,
             {
               pagePropsIndex,
               omitMarkedAppPageSearchParams: omitAppPageSearchParams,
@@ -796,6 +801,28 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         } catch {
           return (await executeWithContext(fn, callArgs, cacheVariant)).result;
         }
+      }
+
+      if (segmentPropsIndex !== -1 && (rsc || fallbackParams)) {
+        const props = callArgs[segmentPropsIndex] as Record<string, unknown>;
+        callArgs = replaceArgument(callArgs, segmentPropsIndex, {
+          ...props,
+          params: restoreThenableParams(
+            (await props.params) as Record<string, string | string[]>,
+            outerParams,
+          ),
+        }) as TArgs;
+        if (pagePropsIndex !== undefined) {
+          callArgs = withErroringPageSearchParams(callArgs, pagePropsIndex) as TArgs;
+        }
+      }
+
+      if (fallbackParams) {
+        // Speculative shell params are incomplete: a placeholder must not hit
+        // a concrete route's entry or become an unguarded persisted replay.
+        // Keep decoded values plus lazy framework suspension for execution;
+        // concrete params still follow the normal cache path below.
+        return (await executeWithContext(fn, callArgs, cacheVariant, rsc)).result;
       }
 
       // "use cache: private" uses per-request in-memory cache
