@@ -58,6 +58,7 @@ import { mergeRewriteQuery } from "../utils/query.js";
 import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
+import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import type {
   AppPrerenderRootParamNamesMap,
   AppPrerenderStaticParamsMap,
@@ -180,16 +181,6 @@ type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
-
-/**
- * `matchInterceptRoute` decodes each segment of its source pathname once,
- * because it normally receives the raw interception context header. Encode an
- * already-decoded pathname per segment so that one decode restores exactly
- * these segments and nothing is decoded twice.
- */
-function encodeInterceptionSourcePathname(pathname: string): string {
-  return pathname.split("/").map(encodeURIComponent).join("/");
-}
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
@@ -1801,10 +1792,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // `/en/feed`, yet `/feed` alone matches `/[locale]` with locale "feed".
       // Propose the source this rewrite reaches instead. The check below still
       // requires the exact rewritten route and params, so this cannot select a
-      // source the middleware did not route the claimed source to.
-      const rewrittenSourceContext = encodeInterceptionSourcePathname(
-        sourceMiddlewareResult.cleanPathname,
-      );
+      // source the middleware did not route the claimed source to. The
+      // rewritten pathname is a URL pathname, so it is percent-encoded like the
+      // raw context and the matcher's single decode applies to it unchanged.
+      const rewrittenSourceContext = sourceMiddlewareResult.cleanPathname;
       const rewrittenInterceptionSourceMatch =
         options.matchInterceptRoute?.(
           preActionRoutePathname,
@@ -1815,10 +1806,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionSourceMatch = rewrittenInterceptionSourceMatch;
         interceptionSourceContext = rewrittenSourceContext;
       }
+      // `matchRoute` returns canonical page params while the interception
+      // matcher returns them decoded, so compare both in canonical form.
+      const canonicalInterceptionSourceParams = { ...interceptionSourceMatch.params };
+      canonicalizeAppPageParams(canonicalInterceptionSourceParams);
       if (
         sourceMiddlewareResult.search !== sourceUrl.search ||
         rewrittenSourceMatch?.route !== interceptionSourceMatch.route ||
-        !haveSamePageParams(rewrittenSourceMatch.params, interceptionSourceMatch.params)
+        !haveSamePageParams(rewrittenSourceMatch.params, canonicalInterceptionSourceParams)
       ) {
         options.clearRequestContext();
         return notFoundResponse();

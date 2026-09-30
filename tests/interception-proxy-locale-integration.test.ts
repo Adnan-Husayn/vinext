@@ -13,7 +13,12 @@ import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/interception-proxy-locale");
 const MODAL_MARKER = "INTERCEPTED-MODAL";
 const FULL_PAGE_MARKER = "FULL-PAGE";
-const SOURCE_MARKERS = { root: "ROOT-SOURCE", feed: "FEED-SOURCE" } as const;
+const SOURCE_MARKERS = {
+  root: "ROOT-SOURCE",
+  feed: "FEED-SOURCE",
+  cafe: "CAFE-SOURCE",
+  tag: "TAG-SOURCE",
+} as const;
 
 type StartedServer = {
   baseUrl: string;
@@ -105,6 +110,9 @@ describe.each([
     ["the locale root, sent as its matched pathname", "/en", "root", "/en"],
     ["an already-prefixed source", "/en/feed", "feed", "/en/feed"],
     ["an unprefixed source below the locale root", "/feed", "feed", "/en/feed"],
+    // The rewritten source is already percent-encoded, like the raw context.
+    ["an unprefixed encoded static source", "/caf%C3%A9", "cafe", "/en/café"],
+    ["an unprefixed encoded dynamic source", "/tags/caf%C3%A9", "tag", "/en/tags/café"],
   ])(
     "intercepts from %s (%s)",
     async (_label, source, sourcePage, sourceMatchedUrl) => {
