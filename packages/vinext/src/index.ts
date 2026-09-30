@@ -315,6 +315,7 @@ import {
 } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
+import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
   createRequireConditionResolutionPlugin,
   isConditionalRequireScriptModuleId,
@@ -2169,7 +2170,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   });
   const commonJsTransform = commonJsPlugin.transform;
   if (typeof commonJsTransform === "function") {
-    commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+    const environmentAwareCommonJsTransform: typeof commonJsTransform = function (
+      code,
+      id,
+      ...args
+    ) {
       const normalizedId = toSlash(stripViteModuleQuery(id));
       const nitroServicePath =
         this.environment.name === "nitro" && nitroBuildDir && normalizedId.endsWith("/entry.js")
@@ -2203,6 +2208,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         importMetaUrlCapability.isBundledCommonJsDependencyId(id);
       const projectLocal =
         !bundledDependency && !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
+      // vite-plugin-commonjs strips comments from the whole module before it
+      // consults its filter, then parses it with acorn. Apply the same filter
+      // decision up front so modules it never transforms skip both passes.
+      const userCondition = commonjsTransformFilter(
+        id,
+        projectLocal && isDev,
+        bundledDependency,
+        importMetaUrlCapability.isBundledCommonJsDependencyId,
+      );
+      if (userCondition === false) return null;
+      if (userCondition !== true && id.includes("node_modules")) return null;
       const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;
       transformProjectLocalCommonJs = projectLocal && isDev;
@@ -2216,6 +2232,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
       }
+    };
+    // Modules without any syntax vite-plugin-commonjs could rewrite never
+    // reach JavaScript, so it does not strip and parse them for nothing.
+    commonJsPlugin.transform = {
+      filter: { code: { include: COMMONJS_SYNTAX_CODE_FILTER } },
+      handler: environmentAwareCommonJsTransform,
     };
   }
 
