@@ -69,13 +69,20 @@ function findEntryFileFromManifest(
   // iteration order is not guaranteed to surface the client entry first.
   // Prefer marker order over manifest order so hybrid app+pages builds use the
   // Pages entry for the Pages renderer even if the App entry appears first.
-  // Match the manifest key, source id and chunk name before the output file:
-  // users can configure file names that no longer carry the entry's name.
-  for (const marker of markers) {
-    const markedEntry = entries.find(([key, entry]) =>
-      [key, entry.src, entry.name, entry.file].some((value) => value?.includes(marker)),
-    );
-    if (markedEntry) return manifestFileWithBase(markedEntry[1].file, assetBase);
+  // Match every entry's manifest key, source id and chunk name before any
+  // output file: users can configure file names that no longer carry (or
+  // happen to contain another) entry's name.
+  const fieldGroups = [
+    (key: string, entry: BuildManifestChunk) => [key, entry.src, entry.name],
+    (_key: string, entry: BuildManifestChunk) => [entry.file],
+  ];
+  for (const fields of fieldGroups) {
+    for (const marker of markers) {
+      const markedEntry = entries.find(([key, entry]) =>
+        fields(key, entry).some((value) => value?.includes(marker)),
+      );
+      if (markedEntry) return manifestFileWithBase(markedEntry[1].file, assetBase);
+    }
   }
 
   const chosen = fallbackToFirstEntry ? entries[0]?.[1] : undefined;

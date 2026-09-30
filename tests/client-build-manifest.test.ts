@@ -168,6 +168,27 @@ describe("client build manifest helpers", () => {
     ).toBe("_next/static/chunks/Cq1x9Ab2.js");
   });
 
+  it("prefers any entry's manifest identity over another entry's file name", () => {
+    const manifest = {
+      "virtual:vinext-app-browser-entry": {
+        file: "_next/static/chunks/vinext-client-entry/index-Cq1x9Ab2.js",
+        name: "index",
+        src: "virtual:vinext-app-browser-entry",
+        isEntry: true,
+      },
+      "virtual:vinext-client-entry": {
+        file: "_next/static/chunks/vinext-client-entry/index-Df3k8Lm0.js",
+        name: "index",
+        src: "virtual:vinext-client-entry",
+        isEntry: true,
+      },
+    };
+
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/chunks/vinext-client-entry/index-Df3k8Lm0.js",
+    );
+  });
+
   it("reads vinext's entry manifest for hashed client entry names", async () => {
     await fsp.writeFile(
       path.join(clientDir, VINEXT_CLIENT_ENTRY_MANIFEST),
