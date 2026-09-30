@@ -1361,6 +1361,11 @@ describe("optimizeDeps.exclude for vinext", () => {
     { name: "rsc noDiscovery", rsc: { noDiscovery: true }, expected: [] as string[] },
     { name: "rsc preserveSymlinks", preserveSymlinks: true, expected: [] as string[] },
     {
+      name: "aliased dependency",
+      alias: "helper-dep",
+      expected: ["@adapter/store", "@adapter/store/style.css"],
+    },
+    {
       name: "rsc exclusion",
       rsc: { exclude: ["helper-dep"] },
       expected: ["@adapter/store", "@adapter/store/style.css"],
@@ -1439,6 +1444,11 @@ describe("optimizeDeps.exclude for vinext", () => {
         environments: { rsc: rscConfig, ssr: ssrConfig },
         logger,
         plugins: [],
+        resolve: {
+          alias: options.alias
+            ? [{ find: options.alias, replacement: path.join(root, "src", `${options.alias}.ts`) }]
+            : [],
+        },
         root,
       };
       await plugin.configResolved(resolvedConfig);

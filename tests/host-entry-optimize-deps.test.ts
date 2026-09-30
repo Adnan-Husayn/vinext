@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Alias } from "vite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { collectHostEntryOptimizeDepsIncludes } from "../packages/vinext/src/plugins/host-entry-optimize-deps.js";
 
@@ -22,8 +23,8 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     return dependencyRoot;
   }
 
-  function collect(entry: string): string[] {
-    return collectHostEntryOptimizeDepsIncludes(entry, root).sort();
+  function collect(entry: string, aliases: Alias[] = []): string[] {
+    return collectHostEntryOptimizeDepsIncludes(entry, root, aliases).sort();
   }
 
   beforeEach(() => {
@@ -130,6 +131,46 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     );
 
     expect(collect(entry)).toEqual(["inside-dep"]);
+  });
+
+  it("follows relative imports by real path", () => {
+    // Vite realpaths a symlinked module and resolves its imports from the
+    // target, which here is another package with its own copy.
+    const targetRoot = path.join(root, "packages", "shared");
+    fs.mkdirSync(path.join(targetRoot, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(targetRoot, "package.json"), JSON.stringify({ name: "shared" }));
+    fs.writeFileSync(path.join(targetRoot, "dist", "index.js"), 'import "target-dep";\n');
+    install("target-dep");
+    install("target-dep", targetRoot);
+    fs.symlinkSync(path.join(targetRoot, "dist"), path.join(packageRoot, "shared"), "junction");
+    const entry = write("entry.js", 'import "./shared/index.js";\nimport "inside-dep";\n');
+
+    expect(collect(entry)).toEqual(["inside-dep"]);
+  });
+
+  it("skips ids matched by an alias", () => {
+    const entry = write(
+      "entry.js",
+      [
+        'import "real-dep";',
+        'import "aliased-dep";',
+        'import "aliased-dep/subpath";',
+        'import "prefix-dep/runtime";',
+        'import "pattern-dep";',
+        'import "aliased-dep-suffix";',
+      ].join("\n"),
+    );
+    for (const name of ["aliased-dep", "prefix-dep", "pattern-dep", "aliased-dep-suffix"]) {
+      install(name);
+    }
+
+    expect(
+      collect(entry, [
+        { find: "aliased-dep", replacement: path.join(root, "src", "aliased-dep.ts") },
+        { find: "prefix-dep/", replacement: path.join(root, "src", "prefix-dep") + "/" },
+        { find: /^pattern-dep$/, replacement: path.join(root, "src", "pattern-dep.ts") },
+      ]),
+    ).toEqual(["aliased-dep-suffix", "real-dep"]);
   });
 
   it("tolerates missing files, cycles, and unparsable modules", () => {
@@ -245,7 +286,7 @@ describe("collectHostEntryOptimizeDepsIncludes", () => {
     const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-host-entry-root-"));
     try {
       install("real-dep", otherRoot);
-      expect(collectHostEntryOptimizeDepsIncludes(entry, otherRoot)).toEqual(["real-dep"]);
+      expect(collectHostEntryOptimizeDepsIncludes(entry, otherRoot, [])).toEqual(["real-dep"]);
     } finally {
       fs.rmSync(otherRoot, { recursive: true, force: true });
     }

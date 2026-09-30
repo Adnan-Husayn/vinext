@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { parseAst, type ESTree } from "vite";
+import { parseAst, type Alias, type ESTree } from "vite";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
 import { canonicalizeFilePath, NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { readJsonFile } from "../utils/safe-json-file.js";
@@ -28,13 +28,20 @@ const MAX_HOST_ENTRY_FILES = 64;
  * has its own copy registered by Vite first, so its dependency is kept only
  * when that copy is the root's.
  *
- * Only relative imports inside the entry's own package are followed. Type-only
- * imports, builtins, protocol ids, package imports, and imports of the owning
- * package itself are skipped. Ids are not resolved further, so non-JS subpaths
- * (CSS, JSON, WASM) are kept. Vite skips those includes, as discovery does, and
- * the caller silences the warning it logs for them.
+ * Only relative imports inside the entry's own package are followed, by real
+ * path as Vite loads them. Type-only imports, builtins, protocol ids, package
+ * imports, and imports of the owning package itself are skipped. So are ids
+ * matched by `aliases`: server environments only optimize an aliased bare
+ * import when it is explicitly included, so including one would change it.
+ * Ids are not resolved further, so non-JS subpaths (CSS, JSON, WASM) are kept.
+ * Vite skips those includes, as discovery does, and the caller silences the
+ * warning it logs for them.
  */
-export function collectHostEntryOptimizeDepsIncludes(entry: string, root: string): string[] {
+export function collectHostEntryOptimizeDepsIncludes(
+  entry: string,
+  root: string,
+  aliases: readonly Alias[],
+): string[] {
   const realEntry = canonicalizeFilePath(entry);
   const realRoot = canonicalizeFilePath(root);
   const owners = new Map<string, string | null>();
@@ -62,10 +69,12 @@ export function collectHostEntryOptimizeDepsIncludes(entry: string, root: string
       if (!isRuntimeModuleDeclaration(statement)) continue;
       const specifier = statement.source.value;
       if (specifier.startsWith("./") || specifier.startsWith("../")) {
-        pending.push(path.resolve(path.dirname(file), specifier));
+        pending.push(canonicalizeFilePath(path.resolve(path.dirname(file), specifier)));
         continue;
       }
-      if (includes.has(specifier)) continue;
+      if (includes.has(specifier) || aliases.some(({ find }) => matchesAlias(find, specifier))) {
+        continue;
+      }
       const packageName = packageNameFromSpecifier(specifier);
       if (!packageName || packageName === owner) continue;
       const importerCopy = findInstalledPackageDir(path.dirname(file), packageName);
@@ -105,6 +114,12 @@ function isRuntimeModuleDeclaration(
     );
   }
   return statement.type === "ExportAllDeclaration" && statement.exportKind !== "type";
+}
+
+/** Match `id` against an alias `find` pattern the way Vite's alias plugins do. */
+function matchesAlias(find: string | RegExp, id: string): boolean {
+  if (find instanceof RegExp) return find.test(id);
+  return id === find || id.startsWith(find.endsWith("/") ? find : `${find}/`);
 }
 
 /**

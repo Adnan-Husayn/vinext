@@ -4266,7 +4266,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               !optimizer.noDiscovery &&
               !environment.resolve.preserveSymlinks &&
               matchedMultiStageOutput
-                ? collectHostEntryOptimizeDepsIncludes(matchedMultiStageOutput.entry, config.root)
+                ? collectHostEntryOptimizeDepsIncludes(
+                    matchedMultiStageOutput.entry,
+                    config.root,
+                    config.resolve.alias,
+                  )
                 : null;
             const optionalIncludes = hasAppDir
               ? name === "client" && !optimizer.noDiscovery
