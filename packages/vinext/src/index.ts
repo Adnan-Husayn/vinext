@@ -1665,12 +1665,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // SSR environment from vinext's top-level client output. Keep that SSR
   // naming as defaults: SSR-emitted asset URLs must match the client's.
   let plainPagesSsrFileNamesAssetsDir: string | null = null;
-  // User `assetFileNames` from top-level `build` and `environments.client`.
-  // Server environments are seeded from top-level `build` only, so a
-  // client-environment override must be copied onto them: server-emitted asset
-  // URLs have to match the files the client build writes.
-  let topLevelAssetFileNames: ReturnType<typeof getOutputAssetFileNames>;
+  // User `assetFileNames` from `environments.client`, and the environments
+  // that declare their own. Server environments are seeded from top-level
+  // `build` only, so a client-environment override must be copied onto them:
+  // server-emitted asset URLs have to match the files the client build writes.
   let clientEnvironmentAssetFileNames: ReturnType<typeof getOutputAssetFileNames>;
+  let environmentsWithOwnAssetFileNames = new Set<string>();
   let hasCloudflarePlugin = false;
   let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
@@ -3233,8 +3233,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : null;
         plainPagesSsrFileNamesAssetsDir =
           !isMultiEnv && shouldInjectPlainPagesEnvironments ? clientAssetsDir : null;
-        topLevelAssetFileNames = getOutputAssetFileNames(
-          getBuildBundlerOptions(config.build)?.output,
+        environmentsWithOwnAssetFileNames = new Set(
+          Object.entries(config.environments ?? {})
+            .filter(
+              ([, environment]) =>
+                getOutputAssetFileNames(getBuildBundlerOptions(environment?.build)?.output) !==
+                undefined,
+            )
+            .map(([environmentName]) => environmentName),
         );
         clientEnvironmentAssetFileNames = getOutputAssetFileNames(
           getBuildBundlerOptions(config.environments?.client?.build)?.output,
@@ -5323,14 +5329,13 @@ export const loadServerActionClient = ${
         // merging output entries by index, so an array-shaped user config
         // cannot be safely augmented here. Preserve it unchanged.
         if (Array.isArray(output)) return null;
-        // An asset name equal to the top-level one was inherited, not set on
-        // this environment, so the client-environment override replaces it.
+        // A client-environment override replaces a name this environment only
+        // inherited from top-level `build`; its own declared name is kept.
         // Names added by later plugins' config hooks aren't seen here; such
         // setups should set matching asset names on every environment.
-        const inheritsAssetFileNames =
-          output?.assetFileNames === undefined || output.assetFileNames === topLevelAssetFileNames;
         const serverAssetFileNames =
-          inheritsAssetFileNames && clientEnvironmentAssetFileNames !== undefined
+          !environmentsWithOwnAssetFileNames.has(name) &&
+          clientEnvironmentAssetFileNames !== undefined
             ? clientEnvironmentAssetFileNames
             : output?.assetFileNames === undefined
               ? createClientAssetFileNames(resolveAssetsDir(nextConfig.assetPrefix ?? ""))

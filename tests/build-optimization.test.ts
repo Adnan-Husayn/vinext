@@ -1899,7 +1899,7 @@ describe("treeshake config integration", () => {
             ssr: {
               build: {
                 rolldownOptions: {
-                  output: { assetFileNames: "_next/static/media/ssr-[hash][extname]" },
+                  output: { assetFileNames: "_next/static/media/top-[hash][extname]" },
                 },
               },
             },
@@ -1914,7 +1914,8 @@ describe("treeshake config integration", () => {
           ).assetFileNames;
         expect(layeredAssetFileNames("client")).toBe("_next/static/media/client-[hash][extname]");
         expect(layeredAssetFileNames("rsc")).toBe("_next/static/media/client-[hash][extname]");
-        expect(layeredAssetFileNames("ssr")).toBe("_next/static/media/ssr-[hash][extname]");
+        // Kept even though it equals the inherited top-level name.
+        expect(layeredAssetFileNames("ssr")).toBe("_next/static/media/top-[hash][extname]");
       } finally {
         await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }
