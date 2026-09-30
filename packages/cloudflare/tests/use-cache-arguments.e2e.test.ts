@@ -135,6 +135,7 @@ describe("use cache File identity and replay in Workers", () => {
     "shared-file",
     "shared-blob",
     "captured-file",
+    "captured-rich",
     "blob",
     "bytes",
     "form-order",

@@ -28,6 +28,7 @@
  * - "use cache: private"  — per-request cache (not shared across requests)
  */
 
+import { cache as reactCache } from "react";
 import {
   getDataCacheHandler,
   type CachedFetchValue,
@@ -57,7 +58,9 @@ import {
 } from "./ppr-fallback-shell.js";
 import {
   APP_PAGE_USE_CACHE_MARKER,
+  APP_LAYOUT_USE_CACHE_MARKER,
   hasUseCachePageMarker,
+  hasUseCacheLayoutMarker,
   isMarkedAppPagePropsObject,
   isUseCacheFunctionReference,
   markAppPagePropsForUseCache,
@@ -682,22 +685,30 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // user code with `.bind(null, ...)`. So locate the marked props instead
       // of assuming an index. Positions are the same in `args`/`admittedArgs`
       // (envelope) and `executionArgs` (captures).
-      const pagePropsArgIndex = replay?.pagePropsIndex ?? args.findIndex(hasUseCachePageMarker);
-      const isPageInvocation = pagePropsArgIndex !== -1;
-      const invocationArgs =
-        isPageInvocation && !replay
-          ? replaceArgument(
-              args,
-              pagePropsArgIndex,
-              withoutUseCachePageMarker(args[pagePropsArgIndex] as Record<string, unknown>),
-            )
-          : args;
-      const admittedArgs =
+      // Discard unused props before locating framework markers. A zero-argument
+      // cached page/layout must neither serialize nor reconstruct its props.
+      const limitedArgs =
         options.argumentCount === undefined
-          ? invocationArgs
+          ? args
           : hasCaptureEnvelope
-            ? [invocationArgs[0], ...invocationArgs.slice(1, 1 + options.argumentCount)]
-            : invocationArgs.slice(0, options.argumentCount);
+            ? [args[0], ...args.slice(1, 1 + options.argumentCount)]
+            : args.slice(0, options.argumentCount);
+      const pagePropsArgIndex =
+        replay?.pagePropsIndex ?? limitedArgs.findIndex(hasUseCachePageMarker);
+      const layoutPropsArgIndex =
+        replay?.layoutPropsIndex ?? limitedArgs.findIndex(hasUseCacheLayoutMarker);
+      const isPageInvocation = pagePropsArgIndex !== -1;
+      const segmentPropsIndex = isPageInvocation ? pagePropsArgIndex : layoutPropsArgIndex;
+      const admittedArgs =
+        segmentPropsIndex !== -1 && !replay
+          ? replaceArgument(
+              limitedArgs,
+              segmentPropsIndex,
+              withoutUseCacheSegmentMarker(
+                limitedArgs[segmentPropsIndex] as Record<string, unknown>,
+              ),
+            )
+          : limitedArgs;
       const executionArgs = hasCaptureEnvelope
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
@@ -722,7 +733,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             ? executionArgs
             : toReplayablePageArgs(executionArgs, pagePropsIndex).map((arg, index) =>
                 index === pagePropsIndex
-                  ? withoutUseCachePageMarker(arg as Record<string, unknown>)
+                  ? withoutUseCacheSegmentMarker(arg as Record<string, unknown>)
                   : arg,
               );
         flightArguments =
@@ -734,6 +745,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             }),
             isPageInvocation ? pagePropsArgIndex : undefined,
           ));
+        if (!replay && layoutPropsArgIndex !== -1) {
+          flightArguments.layoutPropsIndex = layoutPropsArgIndex;
+        }
         cacheKey = buildUseCacheKey(
           cacheFunctionId,
           keySeed,
@@ -742,9 +756,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         callArgs = (await rsc.decodeReply(restoreFlightReply(flightArguments), {
           temporaryReferences: serverReferences,
         })) as TArgs;
-        if (isPageInvocation) {
-          const props = callArgs[pagePropsArgIndex] as Record<string, unknown>;
-          callArgs = replaceArgument(callArgs, pagePropsArgIndex, {
+        if (segmentPropsIndex !== -1) {
+          const props = callArgs[segmentPropsIndex] as Record<string, unknown>;
+          callArgs = replaceArgument(callArgs, segmentPropsIndex, {
             ...props,
             params: makeThenableParams((await props.params) as Record<string, string | string[]>),
           }) as TArgs;
@@ -1011,7 +1025,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     }, cacheVariant);
   };
 
-  const cachedFn = (...args: TArgs) => invoke(args);
+  const cachedFn = memoizeInCacheScope((...args: TArgs) => invoke(args));
   replayableFunctions.set(cachedFn, (data) => invoke([] as unknown as TArgs, data));
 
   // Preserve the original function's arity on the wrapper. The wrapper is
@@ -1035,6 +1049,27 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   }
 
   return cachedFn;
+}
+
+/** Memoize in one React render without skipping cache guards or scoped serialization. */
+export function memoizeInCacheScope<TArgs extends unknown[], TResult>(
+  fn: (...args: TArgs) => TResult,
+): (...args: TArgs) => TResult {
+  const memoized = reactCache(
+    (
+      _parent: CacheContext | undefined,
+      _workUnit: ReturnType<typeof workUnitAsyncStorage.getStore>,
+      _unstable: boolean,
+      ...args: TArgs
+    ) => fn(...args),
+  );
+  return (...args) =>
+    memoized(
+      cacheContextStorage.getStore(),
+      workUnitAsyncStorage.getStore(),
+      unstableCacheContextStorage.getStore() === true,
+      ...args,
+    );
 }
 
 /** @internal Symbol used to identify "use cache" wrapper functions. */
@@ -1561,9 +1596,13 @@ function replaceArgument(args: readonly unknown[], index: number, value: unknown
   return result;
 }
 
-/** Remove the `$$isPage` invocation marker before props reach the key or user code. */
-function withoutUseCachePageMarker(props: Record<string, unknown>): Record<string, unknown> {
-  const { [APP_PAGE_USE_CACHE_MARKER]: _marker, ...pageProps } = props;
+/** Remove framework invocation markers before props reach the key or user code. */
+function withoutUseCacheSegmentMarker(props: Record<string, unknown>): Record<string, unknown> {
+  const {
+    [APP_PAGE_USE_CACHE_MARKER]: _page,
+    [APP_LAYOUT_USE_CACHE_MARKER]: _layout,
+    ...pageProps
+  } = props;
   // Keep the page probe's non-enumerable marker, which the spread drops.
   return isMarkedAppPagePropsObject(props) ? markAppPagePropsForUseCache(pageProps) : pageProps;
 }

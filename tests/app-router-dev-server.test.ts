@@ -88,7 +88,7 @@ describe("App Router integration", () => {
     await server?.close();
   });
 
-  it.each(["file", "blob", "bytes", "captured-file"])(
+  it.each(["file", "blob", "bytes", "captured-file", "captured-rich"])(
     "uses the Flight cache codec for %s arguments in dev",
     async (kind) => {
       const response = await fetch(
@@ -101,6 +101,12 @@ describe("App Router integration", () => {
           type: "Uint8Array",
           offset: 0,
           bytes: [...new TextEncoder().encode("private")],
+        });
+      } else if (kind === "captured-rich") {
+        expect(result.value).toMatchObject({
+          file: { name: "private.txt", lastModified: 111, text: "private" },
+          child: "captured child",
+          token: "Symbol(vinext:captured-token)",
         });
       } else {
         expect(result.value).toMatchObject({

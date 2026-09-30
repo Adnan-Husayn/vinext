@@ -921,6 +921,7 @@ describe("use cache production argument isolation", () => {
     "shared-file",
     "shared-blob",
     "captured-file",
+    "captured-rich",
     "byte-view",
     "data-view",
     "nested-view",

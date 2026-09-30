@@ -2,9 +2,15 @@ import {
   decryptActionBoundArgs,
   encryptActionBoundArgs,
 } from "@vitejs/plugin-rsc/utils/encryption-runtime";
-import { encodeReply, decodeReply } from "@vitejs/plugin-rsc/react/rsc";
+import {
+  encodeReply,
+  decodeReply,
+  renderToReadableStream,
+  createFromReadableStream,
+} from "@vitejs/plugin-rsc/react/rsc";
 import {
   isUseCacheFunction,
+  memoizeInCacheScope,
   replayCachedFunction,
   registerCachedFunction as registerCachedFunctionBase,
   type RegisterCachedFunctionOptions,
@@ -23,7 +29,7 @@ type CacheCaptureEnvelope = {
   encrypted: Promise<string>;
 };
 
-/** Captures and invocations use Flight's argument codec, never its result codec. */
+/** Persist invocation arguments using Flight's argument codec. */
 export async function encodeCacheArguments(args: unknown[]): Promise<CacheFlightArguments> {
   return snapshotFlightReply(
     await encodeReply(args, {
@@ -54,10 +60,44 @@ async function decryptArguments(
 }
 
 export function encryptCacheCaptures(captures: unknown[]): CacheCaptureEnvelope {
-  return {
+  // Inline functions allocate a fresh capture tuple on each call. Memoize its
+  // values so React.cache can recognize repeated bound calls in one render.
+  return memoizedCaptureEnvelope(...captures);
+}
+
+const memoizedCaptureEnvelope = memoizeInCacheScope(
+  (...captures: unknown[]): CacheCaptureEnvelope => ({
     type: CACHE_CAPTURE_TYPE,
-    encrypted: encodeCacheArguments(captures).then(encryptArguments),
-  };
+    encrypted: encryptCaptures(captures),
+  }),
+);
+
+async function encryptCaptures(captures: unknown[]): Promise<string> {
+  // Like Next.js, closure captures use the result codec, which can serialize
+  // ReactNodes and global symbols. Divert only Files into native metadata
+  // records via Flight's temporary-reference option; no second argument walk.
+  const files = new CacheFlightFormData();
+  let nextFileId = 0;
+  const temporaryReferences = new (class extends WeakMap<object, string> {
+    override get(value: object): string | undefined {
+      let id = super.get(value);
+      if (id === undefined && value instanceof File) {
+        id = String(nextFileId++);
+        super.set(value, id);
+        files.append(id, value);
+      }
+      return id;
+    }
+  })();
+  const stream = renderToReadableStream(captures, { temporaryReferences });
+  const bytes = await new Response(stream).arrayBuffer();
+  return encryptActionBoundArgs(
+    JSON.stringify({
+      version: 1,
+      result: Buffer.from(bytes).toString("base64"),
+      files: await snapshotFlightReply(files),
+    }),
+  );
 }
 
 async function decryptCacheCaptures(value: unknown): Promise<unknown[] | undefined> {
@@ -80,7 +120,23 @@ async function decryptCacheCaptures(value: unknown): Promise<unknown[] | undefin
     )
   )
     return;
-  return decodeCacheArguments(await decryptArguments(encrypted as string | PromiseLike<string>));
+  const serialized = await decryptActionBoundArgs(
+    Promise.resolve(encrypted as string | PromiseLike<string>),
+  );
+  if (typeof serialized !== "string") throw new Error("Invalid cache capture arguments");
+  const payload = JSON.parse(serialized) as {
+    version: number;
+    result: string;
+    files: CacheFlightArguments;
+  };
+  if (payload.version !== 1) throw new Error("Invalid cache capture arguments");
+  const files = restoreFlightReply(payload.files);
+  if (typeof files === "string") throw new Error("Invalid cache capture files");
+  return await createFromReadableStream<unknown[]>(
+    new Response(Buffer.from(payload.result, "base64")).body!,
+    { temporaryReferences: new Map([...files].map(([id, file]) => [`$${id}`, file])) },
+    { preserveServerReferences: true },
+  );
 }
 
 export function registerCachedFunction<TArgs extends unknown[], TResult>(

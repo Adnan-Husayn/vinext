@@ -16,6 +16,7 @@ const USE_CACHE_SERVER_REFERENCE_ID_RE = /#\$\$vinext_cache_[0-9a-f]{64}$/;
  * props before a server component is invoked.
  */
 export const APP_PAGE_USE_CACHE_MARKER = "$$isPage";
+export const APP_LAYOUT_USE_CACHE_MARKER = "$$isLayout";
 
 export function markAppPagePropsForUseCache<T extends object>(props: T): T {
   Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
@@ -63,6 +64,16 @@ export function withUseCachePageMarker<T extends Record<string, unknown>>(
   return isUseCacheFunctionReference(fn) ? { ...props, [APP_PAGE_USE_CACHE_MARKER]: true } : props;
 }
 
+/** Layout components and their metadata resolvers retain framework params too. */
+export function withUseCacheLayoutMarker<T extends Record<string, unknown>>(
+  fn: unknown,
+  props: T,
+): T {
+  return isUseCacheFunctionReference(fn)
+    ? { ...props, [APP_LAYOUT_USE_CACHE_MARKER]: true }
+    : props;
+}
+
 /**
  * Whether `value` is page props carrying the `$$isPage` marker. Only plain
  * objects qualify: the framework always passes a plain props object, and
@@ -70,10 +81,21 @@ export function withUseCachePageMarker<T extends Record<string, unknown>>(
  * observed as a param access.
  */
 export function hasUseCachePageMarker(value: unknown): value is Record<string, unknown> {
+  return hasUseCacheSegmentMarker(value, APP_PAGE_USE_CACHE_MARKER);
+}
+
+export function hasUseCacheLayoutMarker(value: unknown): value is Record<string, unknown> {
+  return hasUseCacheSegmentMarker(value, APP_LAYOUT_USE_CACHE_MARKER);
+}
+
+function hasUseCacheSegmentMarker(
+  value: unknown,
+  marker: string,
+): value is Record<string, unknown> {
   if (value === null || typeof value !== "object") return false;
   const prototype = Object.getPrototypeOf(value);
   return (
     (prototype === Object.prototype || prototype === null) &&
-    (value as Record<string, unknown>)[APP_PAGE_USE_CACHE_MARKER] === true
+    (value as Record<string, unknown>)[marker] === true
   );
 }

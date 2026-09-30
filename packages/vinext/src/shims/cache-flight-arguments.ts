@@ -3,6 +3,7 @@ export type CacheFlightArguments = {
   version: 1;
   reply: string | ([string, string] | [string, string, string, number, string])[];
   pagePropsIndex?: number;
+  layoutPropsIndex?: number;
 };
 
 // Native accessors are deliberately invoked with .call on the transported value.

@@ -1,6 +1,7 @@
 import { getCacheHandler, setCacheHandler, MemoryCacheHandler } from "vinext/shims/cache";
 import { invokeCacheFunction } from "vinext/shims/cache-callable-runtime";
 import { loadServerAction } from "@vitejs/plugin-rsc/react/rsc";
+import { createElement } from "react";
 
 let executions = 0;
 
@@ -56,6 +57,20 @@ async function inspectCaptured(input: unknown, partition: string) {
     return { execution: ++executions, value: await describe(input), partition };
   }
   return captured();
+}
+
+async function inspectRichCaptures(input: unknown, partition: string) {
+  const child = createElement("strong", null, "captured child");
+  const token = Symbol.for("vinext:captured-token");
+  async function captured() {
+    "use cache";
+    return { execution: ++executions, value: await describe(input), child, token, partition };
+  }
+  const result = await captured();
+  return {
+    execution: result.execution,
+    value: { file: result.value, child: result.child.props.children, token: String(result.token) },
+  };
 }
 
 export async function GET(request: Request) {
@@ -132,7 +147,12 @@ export async function GET(request: Request) {
         }),
     );
   if (kind === "promise-order") input = createPromiseInput();
-  const execute = kind === "captured-file" ? inspectCaptured : inspect;
+  const execute =
+    kind === "captured-rich"
+      ? inspectRichCaptures
+      : kind === "captured-file"
+        ? inspectCaptured
+        : inspect;
   if (query.get("replay") === "1") {
     const previous = getCacheHandler();
     let forceMiss = false;

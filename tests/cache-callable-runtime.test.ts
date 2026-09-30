@@ -36,6 +36,69 @@ const file = () => new File(["private"], "private.txt", { type: "text/plain", la
 // Argument decoding is React's implementation, as in Next.js use-cache-wrapper.ts.
 // Only the ordered multipart transport and native File metadata are ours.
 describe("cache callable Flight transport", () => {
+  it.each(["async component", "promise"])("captures JSX from an %s", async (kind) => {
+    const { createElement } = await import("react");
+    async function CapturedChild() {
+      await Promise.resolve();
+      return createElement("p", null, "lazy captured child");
+    }
+    const child =
+      kind === "async component"
+        ? createElement(CapturedChild)
+        : Promise.resolve(createElement("p", null, "lazy captured child"));
+    const cached = registerCachedFunction(
+      async (captures: unknown) => ({ child: await (captures as unknown[])[0] }),
+      `test:lazy-capture:${kind}`,
+      "",
+      {},
+    );
+
+    expect(await cached(encryptCacheCaptures([child]))).toMatchObject({
+      child: { type: "p", props: { children: "lazy captured child" } },
+    });
+  });
+
+  it("captures JSX and global symbols alongside Files without rereading getters", async () => {
+    const { createElement } = await import("react");
+    const node = createElement("p", null, "captured child");
+    const symbol = Symbol.for("test:captured-symbol");
+    let reads = 0;
+    const cached = registerCachedFunction(
+      async (value: unknown) => {
+        const [child, token, input] = value as [unknown, unknown, { file: File }];
+        return {
+          child,
+          token,
+          name: input.file.name,
+          time: input.file.lastModified,
+          text: await input.file.text(),
+        };
+      },
+      "test:rich-captures",
+      "",
+      { serverReferenceId: "test#rich-captures" },
+    );
+    const result = await cached(
+      encryptCacheCaptures([
+        node,
+        symbol,
+        {
+          get file() {
+            reads++;
+            return file();
+          },
+        },
+      ]),
+    );
+    expect(result).toMatchObject({
+      child: { type: "p", props: { children: "captured child" } },
+      token: symbol,
+      name: "private.txt",
+      time: 111,
+      text: "private",
+    });
+    expect(reads).toBe(1);
+  });
   it("preserves File metadata and represented references through JSON persistence", async () => {
     const original = file();
     const form = new FormData();
