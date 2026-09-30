@@ -343,7 +343,9 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
-import { omitUnusedBuildSourcemap } from "./plugins/transform-result.js";
+import { runPureTransform, type PureTransformOutput } from "./plugins/transform-offload.js";
+import { buildDiscardsSourcemap, omitUnusedBuildSourcemap } from "./plugins/transform-result.js";
+import { mapMaybePromise } from "./utils/promise.js";
 import { isServerEnvironment } from "./plugins/environment.js";
 import {
   claimViteCliBuildInvocation,
@@ -2135,10 +2137,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   };
 
-  const cachedConsumerConditionTransform = createTransformCache<
-    string,
-    ReturnType<typeof replaceConsumerEnvironmentConditions>
-  >();
+  const cachedConsumerConditionTransform = createTransformCache<string, PureTransformOutput>();
 
   // vite-plugin-commonjs calls its user filter synchronously, before its first
   // async boundary, but the filter itself receives only an id. Bridge the
@@ -7319,19 +7318,25 @@ export const loadServerActionClient = ${
           const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
             replaceProcessBrowser ? processBrowser : "-"
           }`;
-          return omitUnusedBuildSourcemap(
-            this.environment,
+          const environment = this.environment;
+          return mapMaybePromise(
             cachedConsumerConditionTransform(id, code, variant, () =>
-              replaceConsumerEnvironmentConditions(
-                code,
-                {
-                  ...(replaceTypeofWindow ? { typeofWindow } : {}),
-                  ...(replaceProcessBrowser ? { processBrowser } : {}),
-                  pruneUnreachableImports: scansImports,
-                },
-                id,
+              runPureTransform(
+                "typeof-window",
+                replaceConsumerEnvironmentConditions,
+                [
+                  code,
+                  {
+                    ...(replaceTypeofWindow ? { typeofWindow } : {}),
+                    ...(replaceProcessBrowser ? { processBrowser } : {}),
+                    pruneUnreachableImports: scansImports,
+                  },
+                  id,
+                ],
+                { sourcemap: !buildDiscardsSourcemap(environment) },
               ),
             ),
+            (result) => omitUnusedBuildSourcemap(environment, result),
           );
         },
       },

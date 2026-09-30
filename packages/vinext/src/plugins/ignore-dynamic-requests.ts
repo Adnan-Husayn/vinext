@@ -14,7 +14,12 @@ import {
   unwrapExpression,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
-import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
+import { runPureTransform, type PureTransformOutput } from "./transform-offload.js";
+import {
+  buildDiscardsSourcemap,
+  magicStringTransformResult,
+  omitUnusedBuildSourcemap,
+} from "./transform-result.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -25,6 +30,7 @@ import {
   type AstScope,
 } from "./ast-scope.js";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { mapMaybePromise } from "../utils/promise.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const REQUIRE_PRESCAN =
@@ -772,7 +778,7 @@ function mayContainVeryDynamicRequest(code: string): boolean {
   return false;
 }
 
-function transformVeryDynamicRequests(code: string, id: string) {
+export function transformVeryDynamicRequests(code: string, id: string) {
   // Pre-parse gate. `require` stays a broad substring check (it also covers
   // aliasing and comment-separated `require/* … */(`), but the `import` side is
   // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
@@ -912,7 +918,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
 export function createIgnoreDynamicRequestsPlugin(
   getTranspiledPackages: () => readonly string[] = () => [],
 ): Plugin {
-  const cached = createTransformCache<undefined, ReturnType<typeof transformVeryDynamicRequests>>();
+  const cached = createTransformCache<undefined, PureTransformOutput>();
 
   return {
     name: "vinext:ignore-dynamic-requests",
@@ -944,9 +950,14 @@ export function createIgnoreDynamicRequestsPlugin(
         ) {
           return null;
         }
-        return omitUnusedBuildSourcemap(
-          this.environment,
-          cached(id, code, undefined, () => transformVeryDynamicRequests(code, id)),
+        const environment = this.environment;
+        return mapMaybePromise(
+          cached(id, code, undefined, () =>
+            runPureTransform("ignore-dynamic-requests", transformVeryDynamicRequests, [code, id], {
+              sourcemap: !buildDiscardsSourcemap(environment),
+            }),
+          ),
+          (result) => omitUnusedBuildSourcemap(environment, result),
         );
       },
     },
