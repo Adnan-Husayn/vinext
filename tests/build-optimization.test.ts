@@ -1860,6 +1860,21 @@ describe("treeshake config integration", () => {
         // Unset names keep vinext's defaults, and chunk grouping is preserved.
         expect(output.assetFileNames).toEqual(expect.any(Function));
         expect(output.codeSplitting).toMatchObject({ minSize: 10_000 });
+
+        // Server environments emit asset URLs too, so they must follow the
+        // user's asset names even when those are set only on the client.
+        const assetBuilder = await createBuilder({
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+          ...toUserConfig({ assetFileNames: "_next/static/media/[hash][extname]" }),
+        });
+        for (const name of ["client", "rsc", "ssr"]) {
+          const envOutput = assetBuilder.environments[name].config.build.rolldownOptions
+            .output as Record<string, unknown>;
+          expect(envOutput.assetFileNames).toBe("_next/static/media/[hash][extname]");
+        }
       } finally {
         await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }

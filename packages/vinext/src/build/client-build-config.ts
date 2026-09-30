@@ -209,6 +209,18 @@ export function createClientOutputFileNameDefaults(
 }
 
 /**
+ * `assetFileNames` from a user's `environments.client` output. Server
+ * environments are seeded from top-level `build` only, so without this they
+ * would embed vinext's default asset URLs while the client emits the files
+ * elsewhere.
+ */
+export function getClientEnvironmentAssetFileNames(
+  output: VinextBuildBundlerOptions["output"],
+): VinextBuildOutput["assetFileNames"] {
+  return Array.isArray(output) ? undefined : output?.assetFileNames;
+}
+
+/**
  * User-provided client file name patterns vinext cannot serve correctly:
  * - outside `assetsDir`: built-asset URLs, immutable caching and
  *   precompression all assume client output lives there;

@@ -283,6 +283,7 @@ import {
 import {
   createClientOutputFileNameDefaults,
   findUnsupportedClientOutputFileNames,
+  getClientEnvironmentAssetFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
@@ -1664,6 +1665,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // SSR environment from vinext's top-level client output. Keep that SSR
   // naming as defaults: SSR-emitted asset URLs must match the client's.
   let plainPagesSsrFileNamesAssetsDir: string | null = null;
+  let clientEnvironmentAssetFileNames: ReturnType<typeof getClientEnvironmentAssetFileNames>;
   let hasCloudflarePlugin = false;
   let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
@@ -3226,6 +3228,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : null;
         plainPagesSsrFileNamesAssetsDir =
           !isMultiEnv && shouldInjectPlainPagesEnvironments ? clientAssetsDir : null;
+        clientEnvironmentAssetFileNames = getClientEnvironmentAssetFileNames(
+          getBuildBundlerOptions(config.environments?.client?.build)?.output,
+        );
         const devHmrConfig =
           config.server?.hmr === false
             ? false
@@ -5313,9 +5318,9 @@ export const loadServerActionClient = ${
         const serverFileNameDefaults = {
           ...(output?.assetFileNames === undefined
             ? {
-                assetFileNames: createClientAssetFileNames(
-                  resolveAssetsDir(nextConfig.assetPrefix ?? ""),
-                ),
+                assetFileNames:
+                  clientEnvironmentAssetFileNames ??
+                  createClientAssetFileNames(resolveAssetsDir(nextConfig.assetPrefix ?? "")),
               }
             : {}),
           // Server chunk names are never public, so they keep `[name]`.
