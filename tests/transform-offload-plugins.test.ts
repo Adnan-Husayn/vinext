@@ -73,6 +73,16 @@ describe("offloaded transform results in plugins", () => {
     expect(dev.map?.mappings).toBeTruthy();
   });
 
+  it("ignore-dynamic-requests does not send modules its pre-parse check rejects", () => {
+    const transform = unwrapHook(createIgnoreDynamicRequestsPlugin().transform);
+    const id = path.join(root, "node_modules", "pkg", "index.js");
+
+    expect(
+      transform.call(environment("build", false), 'export const fs = require("fs");', id),
+    ).toBeNull();
+    expect(runPureTransform).not.toHaveBeenCalled();
+  });
+
   it("import-meta-url awaits server dependency and optimizer results", async () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => root });
     const code = "export const url = import.meta.url;";
@@ -124,15 +134,16 @@ describe("offloaded transform results in plugins", () => {
     const transform = unwrapHook(plugin?.transform);
     const code = 'if (typeof window !== "undefined") import("browser-only");';
     const id = path.join(root, "app", "page.js");
+    const scan = environment("build", false, {
+      build: { write: false, sourcemap: false },
+      cacheDir: path.join(root, ".vite"),
+    });
 
-    const scanned = transform.call(
-      environment("build", false, {
-        build: { write: false, sourcemap: false },
-        cacheDir: path.join(root, ".vite"),
-      }),
-      code,
-      id,
-    );
+    // Admitted by the hook's code filter, but its pre-parse check rejects it.
+    expect(transform.call(scan, "export const env = process /* node */.env;", id)).toBeNull();
+    expect(runPureTransform).not.toHaveBeenCalled();
+
+    const scanned = transform.call(scan, code, id);
     expect(scanned).toBeInstanceOf(Promise);
     await expect(scanned).resolves.toEqual({
       code: expect.not.stringContaining("browser-only"),

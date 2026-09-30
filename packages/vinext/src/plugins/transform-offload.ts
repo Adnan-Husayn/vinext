@@ -4,10 +4,18 @@
  *
  * Builds are bound by the main thread, and multi-megabyte server dependencies
  * (e.g. `typescript.js`) spend most of their vinext plugin time being parsed by
- * transforms that are pure functions of their arguments. Inputs of at least
- * `OFFLOAD_MIN_SOURCE_LENGTH` characters run the same function on a worker;
- * smaller inputs stay inline, where a message round trip would cost more than
- * it saves.
+ * transforms that are pure functions of their arguments. Callers only pass
+ * inputs that the transform will parse, and the pool decides by source length:
+ *
+ * - Inputs of at least `SPAWN_MIN_SOURCE_LENGTH` run on a worker, starting one
+ *   if needed. A new worker takes a few hundred ms to import vite, about as
+ *   long as these transforms take to parse 1 MiB, so only inputs this large pay
+ *   for one, and an app without them never starts a worker.
+ * - Inputs of at least `OFFLOAD_MIN_SOURCE_LENGTH` run on a worker only if one
+ *   is already running and idle, so they never wait for a worker to start or
+ *   queue behind a large transform.
+ * - Smaller inputs stay inline, where a message round trip would cost more
+ *   than it saves.
  *
  * The pool is only an accelerator. Whenever it is unavailable (running from
  * source without a compiled worker entry, a single core, Bun or Deno,
@@ -25,6 +33,7 @@ import type { MagicStringTransformResult } from "./transform-result.js";
 import type { PureTransformKind, PureTransforms } from "./transform-offload-worker.js";
 
 const OFFLOAD_MIN_SOURCE_LENGTH = 128 * 1024;
+const SPAWN_MIN_SOURCE_LENGTH = 1024 * 1024;
 const MAX_WORKERS = 2;
 // Idle workers hold a parsed copy of vite; release them in long-lived dev and
 // watch processes once large transforms stop arriving. The next large
@@ -57,9 +66,10 @@ export type PureTransformResponse =
 export type PureTransformPool = {
   /**
    * Run `transform(...args)`, on a worker when `args[0]` (the module source)
-   * is large. `kind` names the same function in the worker's registry. The
-   * worker only serializes the sourcemap when `sourcemap` is set; reading
-   * `map` from a result computed without one re-runs the transform in-process.
+   * is large enough (see the module comment). `kind` names the same function
+   * in the worker's registry. The worker only serializes the sourcemap when
+   * `sourcemap` is set; reading `map` from a result computed without one
+   * re-runs the transform in-process.
    */
   run<A extends PureTransformArgs>(
     kind: PureTransformKind,
@@ -81,9 +91,17 @@ type PendingTask = {
 export function createPureTransformPool(options: {
   workerUrl: URL;
   size: number;
+  /** Smallest source that may use an already running, idle worker. */
   minSourceLength?: number;
+  /** Smallest source that may start a worker or wait for a busy one. */
+  spawnMinSourceLength?: number;
 }): PureTransformPool {
-  const { workerUrl, size, minSourceLength = OFFLOAD_MIN_SOURCE_LENGTH } = options;
+  const {
+    workerUrl,
+    size,
+    minSourceLength = OFFLOAD_MIN_SOURCE_LENGTH,
+    spawnMinSourceLength = SPAWN_MIN_SOURCE_LENGTH,
+  } = options;
   const workers: PoolWorker[] = [];
   const tasks = new Map<number, PendingTask>();
   let available = size > 0;
@@ -146,9 +164,9 @@ export function createPureTransformPool(options: {
     return owner;
   }
 
-  function pickWorker(): PoolWorker {
+  function pickWorker(sourceLength: number): PoolWorker | undefined {
     const idle = workers.find((owner) => owner.pending === 0);
-    if (idle) return idle;
+    if (idle || sourceLength < spawnMinSourceLength) return idle;
     if (workers.length < size) return spawnWorker();
     return workers.reduce((least, owner) => (owner.pending < least.pending ? owner : least));
   }
@@ -156,13 +174,13 @@ export function createPureTransformPool(options: {
   return {
     run(kind, transform, args, { sourcemap }) {
       if (!available || args[0].length < minSourceLength) return transform(...args);
-      let owner: PoolWorker;
+      let owner: PoolWorker | undefined;
       try {
-        owner = pickWorker();
+        owner = pickWorker(args[0].length);
       } catch {
         void shutDown();
-        return transform(...args);
       }
+      if (!owner) return transform(...args);
 
       return new Promise<PureTransformResult>((resolve, reject) => {
         const runInProcess = () => {
@@ -244,6 +262,8 @@ function getSharedPool(): PureTransformPool {
  * Run a pure transform registered in `transform-offload-worker.ts` on the
  * process-wide worker pool when its input is large, otherwise inline. Returns
  * a promise only for offloaded inputs, so small modules stay synchronous.
+ * Apply the transform's cheap pre-parse check first: an input it rejects would
+ * cost a worker round trip, or a worker start, for no work.
  */
 export function runPureTransform<K extends PureTransformKind>(
   kind: K,

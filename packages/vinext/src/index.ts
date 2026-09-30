@@ -322,6 +322,7 @@ import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import {
   consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
+  mayReplaceConsumerEnvironmentConditions,
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
@@ -7318,21 +7319,21 @@ export const loadServerActionClient = ${
           const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
             replaceProcessBrowser ? processBrowser : "-"
           }`;
+          const replacements = {
+            ...(replaceTypeofWindow ? { typeofWindow } : {}),
+            ...(replaceProcessBrowser ? { processBrowser } : {}),
+            pruneUnreachableImports: scansImports,
+          };
+          // Gate on the main thread so only modules that will be parsed can
+          // be sent to a worker.
+          if (!mayReplaceConsumerEnvironmentConditions(code, replacements)) return null;
           const environment = this.environment;
           return mapMaybePromise(
             cachedConsumerConditionTransform(id, code, variant, () =>
               runPureTransform(
                 "typeof-window",
                 replaceConsumerEnvironmentConditions,
-                [
-                  code,
-                  {
-                    ...(replaceTypeofWindow ? { typeofWindow } : {}),
-                    ...(replaceProcessBrowser ? { processBrowser } : {}),
-                    pruneUnreachableImports: scansImports,
-                  },
-                  id,
-                ],
+                [code, replacements, id],
                 { sourcemap: !buildDiscardsSourcemap(environment) },
               ),
             ),
