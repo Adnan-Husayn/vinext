@@ -85,9 +85,23 @@ describe("dev.preTransformRequests for server environments", () => {
     const root = createAppProject();
     const server = await createServer({
       root,
+      cacheDir: path.join(root, ".vite"),
       configFile: false,
       logLevel: "silent",
-      plugins: [vinext({ appDir: root })],
+      plugins: [
+        vinext({ appDir: root }),
+        {
+          // Skip dependency optimization so the test never writes to (or races
+          // on) an optimizer cache; only local module transforms matter here.
+          name: "disable-deps-optimizer",
+          configEnvironment: {
+            order: "post",
+            handler(_name, config) {
+              config.optimizeDeps = { noDiscovery: true, include: [] };
+            },
+          },
+        },
+      ],
       server: { middlewareMode: true, ws: false },
     });
     try {
