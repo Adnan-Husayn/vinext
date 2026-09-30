@@ -1796,34 +1796,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // different route, params, or query would authorize one identity and
       // render another, so fail closed instead.
       const rewrittenSourceMatch = options.matchRoute(sourceMiddlewareResult.cleanPathname);
-      // The raw context was matched before this rewrite. With an unprefixed
-      // default locale, `/feed` rewrites to `/en/feed`, yet `/feed` alone also
-      // matches `/[locale]` with locale "feed": a different route than the one
-      // the source actually renders. Resolve the interception again from the
-      // rewritten source. It is authorized, because this middleware run
-      // produced it for the claimed source.
-      const rewrittenSourceContext =
-        sourceMiddlewareResult.search === sourceUrl.search &&
-        rewrittenSourceMatch !== null &&
-        (rewrittenSourceMatch.route !== interceptionSourceMatch.route ||
-          !haveSamePageParams(rewrittenSourceMatch.params, interceptionSourceMatch.params))
-          ? encodeInterceptionSourcePathname(sourceMiddlewareResult.cleanPathname)
-          : null;
+      // The raw context was matched before this rewrite, so it can name another
+      // route: with an unprefixed default locale, `/feed` rewrites to
+      // `/en/feed`, yet `/feed` alone matches `/[locale]` with locale "feed".
+      // Propose the source this rewrite reaches instead. The check below still
+      // requires the exact rewritten route and params, so this cannot select a
+      // source the middleware did not route the claimed source to.
+      const rewrittenSourceContext = encodeInterceptionSourcePathname(
+        sourceMiddlewareResult.cleanPathname,
+      );
       const rewrittenInterceptionSourceMatch =
-        rewrittenSourceContext !== null
-          ? (options.matchInterceptRoute?.(
-              preActionRoutePathname,
-              rewrittenSourceContext,
-              interceptionIdHeader,
-            ) ?? null)
-          : null;
-      if (
-        rewrittenSourceContext !== null &&
-        rewrittenInterceptionSourceMatch !== null &&
-        rewrittenInterceptionSourceMatch.interceptionSourceIsConcrete !== false &&
-        rewrittenInterceptionSourceMatch.route === rewrittenSourceMatch?.route &&
-        haveSamePageParams(rewrittenInterceptionSourceMatch.params, rewrittenSourceMatch.params)
-      ) {
+        options.matchInterceptRoute?.(
+          preActionRoutePathname,
+          rewrittenSourceContext,
+          interceptionIdHeader,
+        ) ?? null;
+      if (rewrittenInterceptionSourceMatch !== null) {
         interceptionSourceMatch = rewrittenInterceptionSourceMatch;
         interceptionSourceContext = rewrittenSourceContext;
       }
