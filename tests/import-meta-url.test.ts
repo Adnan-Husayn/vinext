@@ -95,6 +95,31 @@ function expectFinalizedCjsGlobal(
   expect(code).not.toMatch(/__VINEXT_EMITTED_MODULE_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
 }
 
+// Mirrors what plugin-rsc's scan builds keep from each module: its static,
+// re-export and dynamic import specifiers.
+function collectImportSpecifiers(code: string): unknown[] {
+  const specifiers: unknown[] = [];
+  function visit(value: unknown): void {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    const node = value as { type?: string; source?: { value?: unknown } | null };
+    if (
+      node.type === "ImportDeclaration" ||
+      node.type === "ExportNamedDeclaration" ||
+      node.type === "ExportAllDeclaration" ||
+      node.type === "ImportExpression"
+    ) {
+      if (node.source) specifiers.push(node.source.value);
+    }
+    for (const child of Object.values(value)) visit(child);
+  }
+  visit(parseAst(code));
+  return specifiers;
+}
+
 function transformOptimizedDependency(code: string, id: string) {
   const capability = createImportMetaUrlPlugin({ getRoot: () => path.dirname(id) });
   return unwrapHook(capability.optimizeDepsPlugin.transform).call({}, code, id);
@@ -1581,6 +1606,126 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     expect(transform.call(serverContext, `${source}console.log("changed");\n`, pagePath)).not.toBe(
       serverResult,
     );
+  });
+
+  it("shares dependency rewrites across build passes and the dependency optimizer", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transform = unwrapHook(capability.vitePlugin.transform);
+    const optimize = unwrapHook(capability.optimizeDepsPlugin.transform);
+    const source = "exports.url = import.meta.url;\nexports.paths = [__filename, __dirname];\n";
+    const buildContext = (name: string) => ({
+      environment: { name, mode: "build", config: { consumer: "server", build: {} } },
+    });
+
+    const rscResult = transform.call(buildContext("rsc"), source, cjsDependencyPath);
+    expectBundledImportMetaUrl(rscResult?.code);
+    expectBundledCjsGlobal(rscResult?.code, "__dirname");
+    expect(transform.call(buildContext("ssr"), source, `${cjsDependencyPath}?v=test`)).toBe(
+      rscResult,
+    );
+    expect(optimize.call({}, source, cjsDependencyPath)).toBe(rscResult);
+
+    // Unbundled dev modules keep their source identity rather than reusing the
+    // emitted-identity result cached for the same source.
+    const devResult = transform.call(
+      { environment: { name: "ssr", mode: "dev", config: { consumer: "server" } } },
+      source,
+      cjsDependencyPath,
+    );
+    expectSourceCjsGlobal(devResult?.code, "__dirname", cjsDependencyPath);
+    expect(devResult?.code).not.toContain("__VINEXT_EMITTED_MODULE_");
+
+    const changedResult = transform.call(
+      buildContext("rsc"),
+      `${source}exports.changed = true;\n`,
+      cjsDependencyPath,
+    );
+    expect(changedResult).not.toBe(rscResult);
+    expect(changedResult?.code).toContain("exports.changed = true;");
+  });
+
+  it("does not reuse a dependency rewrite after its module format changes", async () => {
+    const dependencyDir = path.join(realRoot, "node_modules", "format-changing-dependency");
+    const dependencyPath = path.join(dependencyDir, "index.js");
+    const packageJsonPath = path.join(dependencyDir, "package.json");
+    const source = "export const path = __dirname;\n";
+    await fsp.mkdir(dependencyDir, { recursive: true });
+    await Promise.all([
+      fsp.writeFile(packageJsonPath, '{"type":"commonjs"}\n'),
+      fsp.writeFile(dependencyPath, source),
+    ]);
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const optimize = unwrapHook(capability.optimizeDepsPlugin.transform);
+    expectBundledCjsGlobal(optimize.call({}, source, dependencyPath)?.code, "__dirname");
+
+    await fsp.writeFile(packageJsonPath, '{"type":"module"}\n');
+    unwrapHook(capability.vitePlugin.watchChange).call({}, packageJsonPath, { event: "update" });
+
+    // ESM has no CommonJS globals to inject, so the same source is now left as is.
+    expect(optimize.call({}, source, dependencyPath)).toBeNull();
+  });
+
+  it("skips identity rewrites only in plugin-rsc import-scan builds", () => {
+    const manager = { isScanBuild: true };
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    unwrapHook(capability.vitePlugin.configResolved).call(
+      {},
+      {
+        root: realRoot,
+        build: { outDir: path.join(realRoot, "dist") },
+        plugins: [{ name: "rsc:minimal", api: { manager } }],
+      },
+    );
+    const transform = unwrapHook(capability.vitePlugin.transform);
+    const context = (write: boolean) => ({
+      environment: { name: "rsc", mode: "build", config: { consumer: "server", build: { write } } },
+    });
+    const inputs = [
+      ["exports.url = import.meta.url;\nexports.path = __dirname;\n", cjsDependencyPath],
+      ["export const url = import.meta.url;\n", pagePath],
+    ] as const;
+    const expectRewritten = (result: { code: string } | null) => {
+      expect(result).not.toBeNull();
+      expect(result?.code).not.toContain("import.meta.url");
+    };
+
+    for (const [source, id] of inputs) {
+      expect(transform.call(context(false), source, id)).toBeNull();
+      expectRewritten(transform.call(context(true), source, id));
+    }
+
+    // Other write-less builds still receive the rewrites.
+    manager.isScanBuild = false;
+    for (const [source, id] of inputs) {
+      expectRewritten(transform.call(context(false), source, id));
+    }
+  });
+
+  it("never adds import specifiers that an import-scan build could observe", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transform = unwrapHook(capability.vitePlugin.transform);
+    const source = [
+      '"use client";',
+      'import { createRequire } from "node:module";',
+      'export { value } from "./value.js";',
+      "exports.require = createRequire(import.meta.url);",
+      'exports.lazy = () => import("./lazy.js");',
+      "exports.paths = [__filename, __dirname, new URL('./asset.txt', import.meta.url)];",
+    ].join("\n");
+
+    for (const mode of ["dev", "build"] as const) {
+      for (const id of [cjsDependencyPath, localCjsPath]) {
+        const result = transform.call(
+          { environment: { name: "rsc", mode, config: { consumer: "server" } } },
+          source,
+          id,
+        );
+        expect(result).not.toBeNull();
+        expect(result.code).not.toBe(source);
+        expect(collectImportSpecifiers(result.code)).toEqual(collectImportSpecifiers(source));
+      }
+    }
   });
 
   it("invalidates cached server identities when a junction target changes", async () => {
