@@ -1349,6 +1349,95 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { name: "dev with a matched multi-stage output", expected: ["@adapter/store", "helper-dep"] },
+    { name: "production", command: "build", expected: [] as string[] },
+    { name: "without the Cloudflare plugin", cloudflare: false, expected: [] as string[] },
+    { name: "unmatched multi-stage output", matchesBuild: false, expected: [] as string[] },
+    { name: "rsc noDiscovery", rsc: { noDiscovery: true }, expected: [] as string[] },
+    { name: "rsc exclusion", rsc: { exclude: ["helper-dep"] }, expected: ["@adapter/store"] },
+  ])("pre-includes multi-stage host entry dependencies: $name", async (options) => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-host-entry-optdeps-"));
+    await fsp.mkdir(path.join(root, "app"));
+    await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
+    // The host-entry transform re-exports this adapter-owned Worker entry, so
+    // Vite's scanner never sees its imports.
+    const adapterRoot = path.join(root, "node_modules/@adapter/platform");
+    await fsp.mkdir(adapterRoot, { recursive: true });
+    await fsp.writeFile(
+      path.join(adapterRoot, "package.json"),
+      JSON.stringify({ name: "@adapter/platform", type: "module" }),
+    );
+    const entry = path.join(adapterRoot, "entry.worker.js");
+    await fsp.writeFile(
+      entry,
+      [
+        'import { createStore } from "@adapter/store";',
+        'import { loadVinextRequestStage } from "vinext/server/request-stage";',
+        'import { helper } from "./helper.js";',
+        "export default createStore(helper, loadVinextRequestStage);",
+      ].join("\n"),
+    );
+    await fsp.writeFile(path.join(adapterRoot, "helper.js"), 'export * from "helper-dep";\n');
+    try {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const plugin = vinext({
+        cache: {
+          cdn: {
+            adapter: path.join(adapterRoot, "cache.js"),
+            output: {
+              entry,
+              matchesBuild: () => options.matchesBuild ?? true,
+              type: "multi-stage",
+            },
+          },
+        },
+      }).find((p: any) => p.name === "vinext:config") as any;
+      const command = options.command ?? "serve";
+      const config = await plugin.config(
+        {
+          root,
+          build: {},
+          plugins: options.cloudflare === false ? [] : [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command },
+      );
+      const rscConfig = mergeConfig(config.environments.rsc, { optimizeDeps: options.rsc ?? {} });
+      const ssrConfig = mergeConfig(config.environments.ssr, {});
+      const warned: string[] = [];
+      const logger = createLogger("silent");
+      logger.warn = (msg) => warned.push(msg);
+      const resolvedConfig = {
+        cacheDir: path.join(root, ".vite"),
+        command,
+        configFile: false,
+        environments: { rsc: rscConfig, ssr: ssrConfig },
+        logger,
+        plugins: [],
+      };
+      await plugin.configResolved(resolvedConfig);
+
+      const rscIncludes = rscConfig.optimizeDeps.include as string[];
+      for (const id of ["@adapter/store", "helper-dep"]) {
+        expect(rscIncludes.includes(id)).toBe(options.expected.includes(id));
+        expect(ssrConfig.optimizeDeps.include ?? []).not.toContain(id);
+      }
+      // Excluded packages (vinext itself) and the adapter package stay out.
+      expect(rscIncludes.some((id) => id.startsWith("vinext/"))).toBe(false);
+      expect(rscIncludes.some((id) => id.startsWith("@adapter/platform"))).toBe(false);
+
+      // Unresolvable optional ids stay quiet, like other optional includes.
+      for (const id of options.expected) {
+        resolvedConfig.logger.warn(
+          `Failed to resolve dependency: ${id}, present in rsc 'optimizeDeps.include'`,
+        );
+      }
+      expect(warned).toEqual([]);
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────

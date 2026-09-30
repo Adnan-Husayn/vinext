@@ -234,6 +234,7 @@ import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins
 import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
+import { collectHostEntryOptimizeDepsIncludes } from "./plugins/host-entry-optimize-deps.js";
 import {
   mergeOptimizeDepsExclude,
   SSR_EXTERNAL_REACT_ENTRIES,
@@ -4253,10 +4254,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const optionalWarnings = new Set<string>();
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
+            // The multi-stage host-entry transform re-exports the adapter's
+            // Worker entry, which the rsc scanner never sees. Without these, the
+            // first Worker import re-optimizes and reloads before dev is ready.
             const optionalIncludes = hasAppDir
               ? name === "client" && !optimizer.noDiscovery
                 ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                : []
+                : name === "rsc" &&
+                    hasCloudflarePlugin &&
+                    !optimizer.noDiscovery &&
+                    typeof matchedMultiStageOutput?.entry === "string"
+                  ? collectHostEntryOptimizeDepsIncludes(matchedMultiStageOutput.entry)
+                  : []
               : name !== "client"
                 ? ["use-sync-external-store/with-selector"]
                 : [];
