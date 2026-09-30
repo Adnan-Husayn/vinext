@@ -256,7 +256,8 @@ function haveSameRequestCookies(
 }
 
 function encodeDecodedPageParams(params: AppPageParams): AppPageParams {
-  const encoded: AppPageParams = {};
+  // Null prototype, like the matcher's records, so a `__proto__` param is kept.
+  const encoded: AppPageParams = Object.create(null);
   for (const [name, value] of Object.entries(params)) {
     encoded[name] = Array.isArray(value)
       ? value.map((part) => encodeURIComponent(part))

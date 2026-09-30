@@ -5149,6 +5149,56 @@ describe("createAppRscHandler", () => {
     expect(interceptSources).toContain("/en/feed");
   });
 
+  it("re-resolves a rewritten interception source with a __proto__ param", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const protoRoute = createPageRoute({
+      pattern: "/:locale/:__proto__",
+      routeSegments: ["[locale]", "[__proto__]"],
+    });
+    // JSON.parse defines `__proto__` as an own key, like the matcher's
+    // null-prototype param records.
+    const protoParams = (): Record<string, string | string[]> =>
+      JSON.parse('{"locale":"en","__proto__":"x"}');
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        if (sourcePathname === "/x") {
+          return { route: localeRootRoute, params: { locale: "x" } };
+        }
+        if (sourcePathname === "/en/x") {
+          return { route: protoRoute, params: protoParams() };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/x") return { params: protoParams(), route: protoRoute };
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/x"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/en/x" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/x" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+  });
+
   it("still fails closed when a source rewrite reaches a route outside the interception", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
