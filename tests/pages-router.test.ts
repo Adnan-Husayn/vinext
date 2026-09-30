@@ -10287,7 +10287,9 @@ export default function Page() { return <p>manifest reuse</p>; }
         expect(first).toContain(frameworkFile);
         expect(first).not.toContain("lazy-2999.js");
         const initialScans = { ...scans };
-        expect(initialScans.manifest).toBe(registered ? 0 : 2);
+        // A caller-supplied manifest is indexed once for page lookups; shared
+        // chunks come from the registered build list without a scan.
+        expect(initialScans.manifest).toBe(registered ? 0 : 1);
         expect(initialScans.cssGraph).toBe(0);
         expect(initialScans.lazyChunks).toBeGreaterThan(0);
         for (let i = 0; i < 3; i++) expect(await render()).toBe(first);

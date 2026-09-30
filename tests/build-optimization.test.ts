@@ -1861,7 +1861,7 @@ describe("treeshake config integration", () => {
     30_000,
   );
 
-  it("warns when user client file names land outside the assets directory", async () => {
+  it("warns when user client file names are outside the assets directory, unhashed or not .js", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
     const mainPlugin = plugins.find(
@@ -1891,18 +1891,45 @@ describe("treeshake config integration", () => {
         {
           build: {
             rolldownOptions: {
-              output: { chunkFileNames: "[hash].js", entryFileNames: () => "entry.js" },
+              output: {
+                chunkFileNames: "[hash].js",
+                entryFileNames: () => "entry.js",
+                assetFileNames: "_next/static/media/[name][extname]",
+              },
             },
           },
         },
         { command: "build" },
       );
 
-      expect(result.build.rolldownOptions.output).toEqual({
-        assetFileNames: expect.any(Function),
-      });
+      // Every name is user-provided, so vinext adds no output defaults.
+      expect(result.build.rolldownOptions).toBeUndefined();
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls[0]?.[0]).toContain('chunkFileNames: "[hash].js"');
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain('chunkFileNames: "[hash].js" (outside "_next/static/")');
+      expect(message).toContain('assetFileNames: "_next/static/media/[name][extname]" (no [hash])');
+      expect(message).not.toContain("entryFileNames");
+
+      warn.mockClear();
+      (clientAssetsDefaultsPlugin as any).configEnvironment(
+        "client",
+        {
+          build: {
+            rolldownOptions: {
+              output: {
+                entryFileNames: "_next/static/chunks/[hash].mjs",
+                chunkFileNames: "_next/static/chunks/[name]-[hash].js",
+              },
+            },
+          },
+        },
+        { command: "build" },
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(
+        'entryFileNames: "_next/static/chunks/[hash].mjs" (not ".js")',
+      );
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain("chunkFileNames");
     } finally {
       warn.mockRestore();
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

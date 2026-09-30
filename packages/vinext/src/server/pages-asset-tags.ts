@@ -76,9 +76,9 @@ function findModuleKey(manifest: Record<string, unknown>, moduleId: string): str
 }
 
 /**
- * Filename-based fallback for manifests that arrive without the build-time
- * `sharedChunks` list (collected from chunk names). Only matches vinext's
- * default `[name]-[hash]` client file names.
+ * Filename-based fallback for when no build-time `sharedChunks` list
+ * (collected from chunk names) is registered. Only matches `[name]-[hash]`
+ * client file names, not vinext's default hash-only names.
  */
 export function getSharedChunkFiles(manifest: Record<string, string[]>): string[] {
   const cached = sharedChunkFiles.get(manifest);
@@ -333,11 +333,12 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         }
       }
 
-      // Shared runtime files are build-wide; scan and deduplicate them once.
-      const sharedFiles =
-        m === runtimeAssets.ssrManifest && runtimeAssets.sharedChunks
-          ? runtimeAssets.sharedChunks
-          : getSharedChunkFiles(m);
+      // Shared runtime files are build-wide. The registered list comes from
+      // the client build manifest's chunk names, so it also applies when the
+      // caller supplies its own copy of that build's SSR manifest (the Node
+      // production server reads one from disk). Only scan file names when no
+      // build metadata was registered.
+      const sharedFiles = runtimeAssets.sharedChunks ?? getSharedChunkFiles(m);
       for (const file of sharedFiles) allFiles.push(file);
     } else {
       // No specific modules — include all assets from manifest.

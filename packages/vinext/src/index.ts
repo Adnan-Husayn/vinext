@@ -282,7 +282,7 @@ import {
 } from "./plugins/sass.js";
 import {
   createClientOutputFileNameDefaults,
-  findClientOutputFileNamesOutsideAssetsDir,
+  findUnsupportedClientOutputFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
@@ -5273,14 +5273,15 @@ export const loadServerActionClient = ${
             ? createClientOutputFileNameDefaults(output, clientOutputFileNamesAssetsDir)
             : null;
           if (clientOutputFileNamesAssetsDir) {
-            const outside = findClientOutputFileNamesOutsideAssetsDir(
+            const unsupported = findUnsupportedClientOutputFileNames(
               output,
               clientOutputFileNamesAssetsDir,
             );
-            if (outside.length > 0) {
+            if (unsupported.length > 0) {
               console.warn(
-                `[vinext] Client output file names should stay under "${clientOutputFileNamesAssetsDir}/" ` +
-                  `so built asset URLs, immutable caching and precompression keep working: ${outside.join(", ")}`,
+                `[vinext] Client output file names should stay under "${clientOutputFileNamesAssetsDir}/", ` +
+                  `include [hash] and emit ".js" chunks so asset URLs, immutable caching and ` +
+                  `script tags keep working: ${unsupported.join("; ")}`,
               );
             }
           }
@@ -8165,9 +8166,7 @@ export const loadServerActionClient = ${
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               ssrManifest,
               cssGraph: runtimeMetadata.cssGraph,
-              ...(ssrManifest && runtimeMetadata.sharedChunks
-                ? { sharedChunks: runtimeMetadata.sharedChunks }
-                : {}),
+              sharedChunks: runtimeMetadata.sharedChunks,
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
               crossOrigin: nextConfig.crossOrigin ?? "",

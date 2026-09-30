@@ -207,23 +207,34 @@ export function createClientOutputFileNameDefaults(
 }
 
 /**
- * User-provided client file name patterns that land outside `assetsDir`.
- * Built-asset URLs, immutable caching and precompression all assume client
- * output lives there. Function patterns cannot be checked statically.
+ * User-provided client file name patterns vinext cannot serve correctly:
+ * - outside `assetsDir`: built-asset URLs, immutable caching and
+ *   precompression all assume client output lives there;
+ * - without `[hash]`: everything under `assetsDir` is served
+ *   `immutable`, so an unhashed URL would pin stale code for a year;
+ * - JS not ending in `.js`: client metadata and Pages Router script
+ *   tags only recognize `.js` chunks.
+ * Function patterns cannot be checked statically.
  */
-export function findClientOutputFileNamesOutsideAssetsDir(
+export function findUnsupportedClientOutputFileNames(
   output: VinextBuildBundlerOptions["output"],
   assetsDir: string,
 ): string[] {
   if (!output || Array.isArray(output)) return [];
-  const outside: string[] = [];
+  const unsupported: string[] = [];
   for (const key of ["entryFileNames", "chunkFileNames", "assetFileNames"] as const) {
     const value = output[key];
-    if (typeof value === "string" && !value.startsWith(`${assetsDir}/`)) {
-      outside.push(`${key}: ${JSON.stringify(value)}`);
+    if (typeof value !== "string") continue;
+    const problems = [
+      !value.startsWith(`${assetsDir}/`) && `outside "${assetsDir}/"`,
+      !value.includes("[hash") && "no [hash]",
+      key !== "assetFileNames" && !value.endsWith(".js") && 'not ".js"',
+    ].filter(Boolean);
+    if (problems.length > 0) {
+      unsupported.push(`${key}: ${JSON.stringify(value)} (${problems.join(", ")})`);
     }
   }
-  return outside;
+  return unsupported;
 }
 
 export function createClientCodeSplittingConfig(
