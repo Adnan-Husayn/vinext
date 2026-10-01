@@ -6089,6 +6089,10 @@ export const loadServerActionClient = ${
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
+          const skipViteInternalsOutsideBasePath = patchViteBaseMiddleware(
+            server,
+            nextConfig?.basePath ?? "",
+          );
           const viteFilesystemMiddlewares = server.middlewares.stack
             .filter(({ handle }) => {
               const name = typeof handle === "function" ? handle.name : "";
@@ -6130,7 +6134,7 @@ export const loadServerActionClient = ${
 
           // Runs after the lookups above, which keep the unwrapped Vite
           // filesystem middlewares for rewrites served from public files.
-          patchViteBaseMiddleware(server, nextConfig?.basePath ?? "");
+          skipViteInternalsOutsideBasePath();
 
           const serveRewrittenViteFilesystemRoute = async (
             req: import("node:http").IncomingMessage,
@@ -6633,8 +6637,11 @@ export const loadServerActionClient = ${
                   matchRoute(pageRouteUrl, pageRoutes) !== null ||
                   matchRoute(apiRouteUrl, apiRoutes) !== null;
               }
+              // Vite's file middlewares skip requests outside basePath, so
+              // only the pipeline can answer them.
               if (
                 isFilePathRequest &&
+                !req.__vinextOutsideBasePath &&
                 !isDataReq &&
                 !filePathMatchesRewrite &&
                 !filePathMatchesPagesRoute &&

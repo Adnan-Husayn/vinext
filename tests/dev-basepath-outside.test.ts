@@ -171,9 +171,11 @@ describe.each(FIXTURES)("dev basePath boundary ($name)", ({ dir, appRouter }) =>
     const inside = await fetch(`${baseUrl}/base/hello`);
     expect(inside.headers.get("x-mw")).toBe("/base|/hello");
 
-    const outside = await fetch(`${baseUrl}/hello`);
-    expect(outside.status).toBe(404);
-    expect(outside.headers.get("x-mw")).toBe("(none)|/hello");
+    for (const pathname of ["/hello", "/hello.json"]) {
+      const outside = await fetch(`${baseUrl}${pathname}`);
+      expect(outside.status, pathname).toBe(404);
+      expect(outside.headers.get("x-mw"), pathname).toBe(`(none)|${pathname}`);
+    }
   });
 });
 
@@ -195,7 +197,22 @@ describe("dev basePath boundary mounted in middleware mode (Pages Router)", () =
       cacheDir: testCacheDir(root),
       configFile: false,
       appType: "custom",
-      plugins: [vinext({ appDir: root })],
+      plugins: [
+        {
+          // A plugin ordered before vinext whose post middleware must keep
+          // running for requests outside basePath.
+          name: "test-post-middleware",
+          configureServer(viteServer) {
+            return () => {
+              viteServer.middlewares.use((_req, res, next) => {
+                res.setHeader("x-plugin-post", "1");
+                next();
+              });
+            };
+          },
+        },
+        vinext({ appDir: root }),
+      ],
       optimizeDeps: { holdUntilCrawlEnd: true },
       server: { middlewareMode: true },
       logLevel: "silent",
@@ -234,5 +251,12 @@ describe("dev basePath boundary mounted in middleware mode (Pages Router)", () =
     expect(header.status).toBe(404);
     expect(header.headers.get("x-hello")).toBe("world");
     expect(header.headers.get("x-mw")).toBe("(none)|/add-header-no-basepath");
+  });
+
+  it("keeps running post middlewares of plugins ordered before vinext", async () => {
+    for (const pathname of ["/base/hello", "/hello"]) {
+      const res = await fetch(`${mountUrl}${pathname}`);
+      expect(res.headers.get("x-plugin-post"), pathname).toBe("1");
+    }
   });
 });
