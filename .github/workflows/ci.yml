@@ -566,6 +566,14 @@ jobs:
             label: app-with-src
             shardIndex: 1
             shardTotal: 1
+          - project: app-router-nitro
+            label: app-router-nitro
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-nitro-dev
+            label: app-router-nitro-dev
+            shardIndex: 1
+            shardTotal: 1
           - project: standalone-output
             label: standalone-output
             shardIndex: 1

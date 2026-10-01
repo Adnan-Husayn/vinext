@@ -339,6 +339,33 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "app-router-nitro": {
+    testDir: "./tests/e2e/app-router-nitro",
+    testMatch: ["preview.spec.ts"],
+    use: { baseURL: "http://localhost:4216" },
+    server: {
+      // `vite preview` serves Nitro's own build output. vinext must turn off
+      // @vitejs/plugin-rsc's preview handler, which would otherwise import an
+      // RSC build from dist/server that Nitro never writes.
+      command: "npx vp run vinext#build && npx vp build && npx vp preview --port 4216 --strictPort",
+      cwd: "./examples/app-router-nitro",
+      port: 4216,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "app-router-nitro-dev": {
+    testDir: "./tests/e2e/app-router-nitro",
+    testMatch: ["dev.spec.ts"],
+    use: { baseURL: "http://localhost:4217" },
+    server: {
+      command: "npx vp dev --port 4217 --strictPort",
+      cwd: "./examples/app-router-nitro",
+      port: 4217,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  },
   "app-with-src": {
     testDir: "./tests/e2e/app-with-src",
     use: { baseURL: "http://localhost:4181" },
