@@ -1200,10 +1200,13 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
   // even though every environment transforms the module that loads it.
   // `null` records a file that couldn't be read as a font.
   const fontMetricsCache = new Map<string, LocalFontMetrics | null>();
+  // Ids of the modules whose fallback CSS was generated from each font file.
+  const fontFileImporters = new Map<string, Set<string>>();
 
   function readFontMetrics(
     context: Rollup.TransformPluginContext,
     file: string,
+    importer: string,
   ): LocalFontMetrics | undefined {
     let metrics = fontMetricsCache.get(file);
     if (metrics === undefined) {
@@ -1224,6 +1227,9 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
       fontMetricsCache.set(file, metrics);
     }
     context.addWatchFile(file);
+    let importers = fontFileImporters.get(file);
+    if (!importers) fontFileImporters.set(file, (importers = new Set()));
+    importers.add(importer);
     return metrics ?? undefined;
   }
 
@@ -1233,6 +1239,21 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
 
     watchChange(id) {
       fontMetricsCache.delete(toSlash(id));
+    },
+
+    hotUpdate({ file, modules }) {
+      const importerIds = fontFileImporters.get(toSlash(file));
+      if (!importerIds) return;
+      // Server environments only soft-invalidate a module that statically
+      // imports the changed font, reusing a transform result that still
+      // holds the old fallback CSS. Updating the importers hard-invalidates
+      // them so every environment regenerates it.
+      const affectedModules = new Set(modules);
+      for (const importerId of importerIds) {
+        const module = this.environment.moduleGraph.getModuleById(importerId);
+        if (module) affectedModules.add(module);
+      }
+      return [...affectedModules];
     },
 
     transform: {
@@ -1327,7 +1348,7 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
           // overrides derived from the font file.
           const internalFontProperties = [`family: ${JSON.stringify(bindingName)}`];
           const fallbackSource = resolveLocalFontFallbackSource(optionsStr, id);
-          const fallbackMetrics = fallbackSource && readFontMetrics(this, fallbackSource.file);
+          const fallbackMetrics = fallbackSource && readFontMetrics(this, fallbackSource.file, id);
           if (fallbackSource && fallbackMetrics) {
             const adjustedFallbackCSS = buildFallbackFontFace(
               bindingName,

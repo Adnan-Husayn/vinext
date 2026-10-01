@@ -872,7 +872,8 @@ describe("next/font/local adjustFontFallback", () => {
     expect(run().code).toContain(`_vinext: { font: { family: "broken" } }`);
     expect(context.warn).toHaveBeenCalledTimes(1);
     expect(context.warn.mock.calls[0][0]).toContain(`Failed to load font file: ${fontFile}`);
-    // The file stays watched so fixing it regenerates the fallback.
+    // The file stays watched so fixing it regenerates the fallback (see
+    // tests/font-local-dev.test.ts for the dev server round trip).
     expect(context.addWatchFile).toHaveBeenCalledWith(fontFile);
 
     // The failed parse is cached until the file changes.
