@@ -433,6 +433,10 @@ jobs:
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
 
+      - name: Install browser for cache policy E2E
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        run: vp exec playwright install chromium
+
       - name: Verify deployed cache prewarm
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
         env:

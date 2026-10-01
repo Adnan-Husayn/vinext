@@ -5381,7 +5381,7 @@ describe("query-free App page ISR entries", () => {
             const representation = isRscRequest ? "RSC" : "HTML";
             expect(render.events, representation).toEqual(["stream", "headers", "cacheLife"]);
             expect(response.headers.get("cache-control"), representation).toBe(
-              "public, max-age=0, must-revalidate",
+              "private, max-age=0, must-revalidate",
             );
             expect(response.headers.get("cloudflare-cdn-cache-control"), representation).toMatch(
               /^public, max-age=60(,|$)/,

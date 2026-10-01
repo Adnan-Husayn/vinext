@@ -1462,6 +1462,7 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          dataHeaders["Cache-Control"] = DEV_PAGES_CACHE_CONTROL;
           applyDevPagesPreviewHeaders(dataHeaders, requestPreview);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
@@ -1641,6 +1642,7 @@ export function createSSRHandler(
         // Pages development cache boundary and font preload headers.
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
+          "Cache-Control": DEV_PAGES_CACHE_CONTROL,
         };
         if (typeof pageModule.getStaticProps === "function") {
           // Next's Pages handler never persists route responses in dev. It may

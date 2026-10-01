@@ -222,6 +222,12 @@ vinext({
 
 Workers Cache can serve a response without rerunning the render stage. Middleware and request routing still run before vinext selects the cached response entrypoint.
 
+Route Handler and Pages API responses keep their explicit `Cache-Control`, including policies set by middleware or `next.config`. As in Next.js, a pass-through middleware match does not remove browser freshness. The app owns this client policy; choose its lifetime with middleware, authentication and downstream caches in mind.
+
+The framework's backing-store policy is separate. An ordinary `Cache-Control` header cannot make a dynamic route cacheable, disable an otherwise static route's storage, or change its revalidation lifetime. For example, `revalidate = 60` still stores a response for 60 seconds with `Cache-Control: max-age=1`, `private`, or `no-store`; `revalidate = 2` still refreshes after two seconds with `max-age=3600`. Pages `getStaticProps` revalidation follows the same rule. `getServerSideProps` and Pages APIs remain uncached internally even when they return a public browser policy. Metadata routes use their framework static/dynamic classification and revalidation settings.
+
+Explicit provider headers remain a Cloudflare extension: `Cloudflare-CDN-Cache-Control` takes precedence over `CDN-Cache-Control` and can select the shared response-cache policy, subject to admission safeguards. Thus `Cache-Control: max-age=10` with `Cloudflare-CDN-Cache-Control: max-age=3600` keeps a 10-second browser lifetime and an hour-long response-cache lifetime. Without a provider override, vinext supplies the framework storage policy to the adapter; it does not infer it from the browser header. The gateway consumes provider headers and preserves the authored client policy. Framework-managed responses without an explicit client policy still require browser revalidation.
+
 This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
 
 Use `createWorkersCacheConfig()` to configure the response entrypoints and version metadata, and add the KV binding for the data adapter:
@@ -478,7 +484,7 @@ Next.js keeps one cache entry per static page, whatever the query string, and vi
 - **Workers Response Store:** a miss renders from the full request, and the response is stored under the path without the query.
 - **Workers Cache:** a hit skips rendering (middleware and routing still run), so the key is chosen before rendering, from the cacheability manifest that a staged deploy writes (`--warm-cache`, see [Cache warming](#cache-warming)). Paths the manifest marks static share one entry across queries, and a request for one that turns dynamic at runtime can fail with a 500, like Next.js's `Page changed from static to dynamic at runtime` error. Other paths, and every path without the manifest, keep the full query in their key.
 
-With Workers Response Store and Workers Cache, some responses aren't stored under the query-free key, for example interception RSC requests and responses that a `next.config` `headers()` rule makes cacheable. Pages Router pages keep the query in their keys on these two backends.
+With Workers Response Store and Workers Cache, some responses aren't stored under the query-free key, for example interception RSC requests and responses that an explicit provider policy in a `next.config` `headers()` rule makes cacheable. Pages Router pages keep the query in their keys on these two backends.
 
 In production, most App page responses that vinext knows will not be stored send Next.js's `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, unless middleware or a `next.config` `headers()` rule sets `Cache-Control`.
 

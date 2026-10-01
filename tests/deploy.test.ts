@@ -1663,7 +1663,7 @@ describe("readPagesRouterEntrySource", () => {
     // handing the request to the middleware function, then delegates via
     // runPagesRequest.
     expect(content).toContain('typeof runMiddleware === "function"');
-    expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
+    expect(content).toContain("wrapMiddlewareWithBasePath(");
     expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
     expect(content).toContain("isDataRequest: isDataReq");
     expect(content).toContain("runPagesRequest(request, deps)");

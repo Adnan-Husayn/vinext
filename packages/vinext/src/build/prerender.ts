@@ -79,7 +79,6 @@ import {
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
-import { isMetadataResponseCacheable } from "../server/metadata-route-cache-policy.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
 const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
@@ -1892,14 +1891,14 @@ export async function prerenderApp({
             };
           }
           const cacheControl = response.headers.get("cache-control") ?? "";
-          if (!isMetadataResponseCacheable(response)) {
+          const requestCacheLife = readPrerenderCacheLifeHeader(response.headers);
+          if (requestCacheLife?.revalidate === 0) {
             await response.body?.cancel();
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
 
-          const requestCacheLife = readPrerenderCacheLifeHeader(response.headers);
           const collectedTags = readPrerenderCacheTagsHeader(response.headers);
-          const cacheValue = await buildAppRouteCacheValue(response);
+          const cacheValue = await buildAppRouteCacheValue(response, cacheControl);
           cacheValue.headers[VINEXT_METADATA_ROUTE_CACHE_HEADER] = "1";
           const outputPath = getAppRouteOutputPath(urlPath);
           const fullPath = path.join(outDir, outputPath);
@@ -1908,7 +1907,7 @@ export async function prerenderApp({
 
           const renderedCacheControl = resolveRenderedCacheControl(
             requestCacheLife ?? {},
-            cacheControl,
+            "",
             config.expireTime,
           );
           const renderedRevalidate = renderedCacheControl.revalidate ?? false;
