@@ -74,6 +74,7 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
     if (
       currentMatchedPathname !== null &&
       matchedSourceParts !== null &&
+      isRawSafeMatchedPathname(currentMatchedPathname) &&
       matchRoutePatternPrefix(matchedSourceParts, interception.sourcePatternParts)
     ) {
       return currentMatchedPathname;
@@ -81,4 +82,18 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   }
 
   return null;
+}
+
+/**
+ * The matched route pathname is decoded, but the server matches the context
+ * on its raw segments. Only a pathname that reads the same either way can
+ * stand in for the URL; otherwise navigate without interception.
+ */
+function isRawSafeMatchedPathname(pathname: string): boolean {
+  if (pathname.includes("%")) return false;
+  try {
+    return new URL(pathname, "http://n").pathname === pathname;
+  } catch {
+    return false;
+  }
 }

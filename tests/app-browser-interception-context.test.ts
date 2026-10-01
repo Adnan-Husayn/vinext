@@ -120,6 +120,23 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
     ).toBe("/interception-mw/en");
   });
 
+  // The matched pathname is decoded, while the server matches the context on
+  // its raw segments, so a decoded value would name a different source.
+  it.each(["/interception-mw/café", "/interception-mw/100%", "/interception-mw/%61"])(
+    "does not send the decoded matched pathname %s as context",
+    (currentMatchedPathname) => {
+      expect(
+        resolveMiddlewareRewriteNavigationInterceptionContext({
+          basePath: "",
+          currentMatchedPathname,
+          currentPathname: "/interception-mw",
+          routeManifest: createRouteManifest([localePhotoInterception]),
+          targetPathname: "/interception-mw/foo/p/1",
+        }),
+      ).toBeNull();
+    },
+  );
+
   it("does not infer fallback context when the target cannot be an intercepted route", () => {
     expect(
       resolveMiddlewareRewriteNavigationInterceptionContext({
