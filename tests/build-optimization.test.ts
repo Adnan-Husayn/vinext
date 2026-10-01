@@ -1997,6 +1997,23 @@ describe("treeshake config integration", () => {
       expect(String(warn.mock.calls[0]?.[0])).not.toContain("chunkFileNames");
       expect(String(warn.mock.calls[0]?.[0])).not.toContain("assetFileNames");
 
+      warn.mockClear();
+      (clientAssetsDefaultsPlugin as any).configEnvironment(
+        "client",
+        {
+          build: {
+            rolldownOptions: {
+              output: { assetFileNames: "_next/static/media/[hash][extname]" },
+            },
+          },
+        },
+        { command: "build" },
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(
+        'assetFileNames: "_next/static/media/[hash][extname]" (no [name])',
+      );
+
       // Plain Pages SSR keeps the server naming it used to inherit from the
       // top-level client output, as defaults that yield to user config.
       expect(

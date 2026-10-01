@@ -227,6 +227,9 @@ export function getOutputFileNames(
  *   tags only recognize `.js` chunks;
  * - assets not ending in `[extname]` (or `.[ext]`): CSS without its real
  *   extension is served as `application/octet-stream` and rejected by browsers.
+ * - assets without `[name]`: restoring CSS `url()` assets deduplicated
+ *   across builds derives sibling file names from the source stem in the
+ *   emitted name (see css-url-assets.ts), so hash-only asset names break it.
  * This is a guard against common mistakes, not full validation: function
  * patterns and array-shaped output are advanced config left to the user to
  * keep within these rules.
@@ -248,6 +251,7 @@ export function findUnsupportedClientOutputFileNames(
         !value.endsWith("[extname]") &&
         !value.endsWith(".[ext]") &&
         "not ending in [extname]",
+      key === "assetFileNames" && !value.includes("[name]") && "no [name]",
     ].filter(Boolean);
     if (problems.length > 0) {
       unsupported.push(`${key}: ${JSON.stringify(value)} (${problems.join(", ")})`);
