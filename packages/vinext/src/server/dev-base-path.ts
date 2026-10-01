@@ -7,7 +7,7 @@ import { hasBasePath } from "../utils/base-path.js";
  * public file, module or asset lives here, so each of them passes the request
  * on instead of serving something Next.js would not serve outside basePath.
  */
-export const OUTSIDE_BASE_PATH_PLACEHOLDER_URL = "/__vinext/outside-base-path";
+const OUTSIDE_BASE_PATH_PLACEHOLDER_URL = "/__vinext/outside-base-path";
 
 function pathnameOf(url: string): string {
   const end = url.search(/[?#]/);
