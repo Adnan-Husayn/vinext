@@ -225,6 +225,30 @@ test.describe("Static Export — App Router", () => {
     await expect(page.locator("h1")).toHaveText("Static Export — App Router");
   });
 
+  test("a settled prefetch does not commit over a fragment round trip from the same task", async ({
+    page,
+  }) => {
+    const aboutPrefetch = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/about/index.txt",
+    );
+    await page.goto(`${BASE}/#start`);
+    await waitForAppRouterHydration(page);
+    await (await aboutPrefetch).finished();
+    await page.waitForTimeout(50);
+
+    // Direct Location API fragment writes fire popstate synchronously, so the
+    // round trip is newer intent even though it ends on the starting URL.
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>('a[href="/about/"]')?.click();
+      window.location.hash = "later";
+      window.location.hash = "start";
+    });
+    await page.waitForTimeout(250);
+    const url = new URL(page.url());
+    expect(`${url.pathname}${url.hash}`).toBe("/#start");
+    await expect(page.locator("h1")).toHaveText("Static Export — App Router");
+  });
+
   test("missing Flight artifacts fall back to the static 404 document", async ({ page }) => {
     const documentPaths: string[] = [];
     const flightPaths: string[] = [];
