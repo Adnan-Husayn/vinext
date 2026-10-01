@@ -159,8 +159,10 @@ async function handleRequest(
     __prerenderSecret,
   );
   // Most requests carry nothing to strip, so skip the Headers copy and Request
-  // clone for them. The expected worker version is itself an internal header,
-  // so a request that needs it re-attached always takes the filtering path.
+  // clone for them. The prerender secret is not in the stripped set, so a
+  // request carrying it must still be filtered to drop it. The expected worker
+  // version is itself an internal header, so a request that needs it
+  // re-attached always takes the filtering path.
   if (
     ctx.isInternalPagesRevalidation ||
     request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) ||

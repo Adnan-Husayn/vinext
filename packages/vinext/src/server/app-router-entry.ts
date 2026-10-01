@@ -247,8 +247,9 @@ async function handleRequest(
   // Strip internal headers from inbound requests before any handler or
   // middleware sees them. Must happen before the RSC handler runs.
   // Builds a new Headers — Request.headers is immutable in Workers. Most
-  // requests carry nothing to strip, so skip the copy and clone for them; the
-  // trusted route params can only be restored from a request with the secret.
+  // requests carry nothing to strip, so skip the copy and clone for them. The
+  // prerender secret is not in the stripped set, so a request carrying it must
+  // still be filtered to drop it.
   if (
     ctx.isInternalPagesRevalidation ||
     request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) ||
