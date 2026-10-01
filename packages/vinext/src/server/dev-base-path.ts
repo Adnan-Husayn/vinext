@@ -18,6 +18,15 @@ function pathnameOf(url: string): string {
   return end === -1 ? url : url.slice(0, end);
 }
 
+/** The WHATWG-canonical pathname (dot segments resolved), as routing sees it. */
+function canonicalPathname(pathname: string): string {
+  try {
+    return new URL(`http://vinext.local${pathname}`).pathname;
+  } catch {
+    return pathname;
+  }
+}
+
 /**
  * Let requests that Vite's `base` middleware would reject reach vinext.
  *
@@ -56,9 +65,13 @@ export function patchViteBaseMiddleware(
 
   stack[baseIndex].handle = function vinextBaseMiddleware(req, res, next) {
     const url = req.url ?? "/";
-    const pathname = pathnameOf(url);
+    const rawPathname = pathnameOf(url);
+    const rest = url.slice(rawPathname.length);
+    // Classify the URL routing will see: `/outside/%2e%2e/base/hello` is
+    // `/base/hello`, and Vite must be handed that spelling to strip the base.
+    const pathname = canonicalPathname(rawPathname);
     if (pathname === basePath) {
-      const baseRootUrl = `${basePath}/${url.slice(pathname.length)}`;
+      const baseRootUrl = `${basePath}/${rest}`;
       if (trailingSlash) {
         res.writeHead(308, { Location: baseRootUrl });
         res.end();
@@ -71,6 +84,7 @@ export function patchViteBaseMiddleware(
       req.__vinextOutsideBasePath = true;
       return next();
     }
+    if (pathname !== rawPathname) req.url = pathname + rest;
     return viteBaseMiddleware(req, res, next);
   } satisfies Connect.NextHandleFunction;
 

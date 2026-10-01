@@ -185,6 +185,35 @@ describe.each(FIXTURES)("dev basePath boundary ($name)", ({ dir, appRouter }) =>
     expect(await res.text()).toContain("Hello World");
   });
 
+  it.skipIf(appRouter)(
+    "keeps a middleware-rewritten edge API request outside the basePath",
+    async () => {
+      const res = await fetch(`${baseUrl}/mw-rewrite-edge-outside`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ basePath: "", pathname: "/mw-rewrite-edge-outside" });
+    },
+  );
+
+  // Routing classifies the canonical pathname, so dot segments that resolve
+  // into the basePath are inside it. fetch() and URL strings canonicalize the
+  // path client-side, so send it raw.
+  it("classifies a dot-segment path by where it resolves", async () => {
+    const { status, body } = await new Promise<{ status: number; body: string }>(
+      (resolve, reject) => {
+        const { hostname, port } = new URL(baseUrl);
+        const req = http.get({ hostname, port, path: "/outside/%2e%2e/base/hello" }, (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => (body += chunk));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on("error", reject);
+      },
+    );
+    expect(status).toBe(200);
+    expect(body).toContain("Hello World");
+  });
+
   // Matches next@16.2.7: the trailing-slash redirect outside basePath keeps
   // the request outside it.
   it("redirects trailing slashes outside the basePath without adding it", async () => {

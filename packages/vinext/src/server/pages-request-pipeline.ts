@@ -45,7 +45,6 @@ import {
 } from "./revalidation-request.js";
 import {
   methodNotAllowedResponse,
-  notFoundStaticAssetResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
@@ -723,16 +722,17 @@ export async function runPagesRequest(
   // and the `basePath: false` config headers staged for this request.
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
     type: "response",
-    response: isMissingBuildAsset()
-      ? notFoundStaticAssetResponse(headersFromRecord(middlewareHeaders))
-      : mergeHeaders(
-          new Response("This page could not be found", {
-            status: 404,
-            headers: { "Content-Type": "text/html; charset=utf-8" },
-          }),
-          middlewareHeaders,
-          middlewareStatus,
-        ),
+    response: finalizeMissingStaticAssetResponse(
+      mergeHeaders(
+        new Response("This page could not be found", {
+          status: 404,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+        middlewareHeaders,
+        middlewareStatus,
+      ),
+      isMissingBuildAsset(),
+    ),
   });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
