@@ -71,6 +71,7 @@ export default function HomePage() {
     <Link href="/settled-target" id="settled-prefetch-link" prefetch={true}>Settled target</Link>
     <Link href="/no-prefetch-target" id="no-prefetch-link" prefetch={false}>No prefetch target</Link>
     <Link href="#later" id="hash-link">Later</Link>
+    <Link href="#start" id="hash-start-link">Start</Link>
   </>;
 }
 `,
@@ -334,6 +335,31 @@ test("a settled prepared prefetch commits after the initiating click's frame", a
     await page.waitForTimeout(250);
     const urlAfterHashNavigation = new URL(page.url());
     expect(`${urlAfterHashNavigation.pathname}${urlAfterHashNavigation.hash}`).toBe("/#later");
+    await expect(page.locator("#settled-target-content")).toHaveCount(0);
+
+    // Hash-only navigations that return to the URL seen before the frame are
+    // still newer intent, so URL equality alone cannot decide the commit.
+    const roundTripFullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/settled-target" &&
+        url.searchParams.has("_rsc") &&
+        response.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await (await roundTripFullResponse).finished();
+    await page.waitForTimeout(50);
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>("#hash-start-link")?.click();
+      document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
+      document.querySelector<HTMLElement>("#hash-link")?.click();
+      document.querySelector<HTMLElement>("#hash-start-link")?.click();
+    });
+    await page.waitForTimeout(250);
+    const urlAfterHashRoundTrip = new URL(page.url());
+    expect(`${urlAfterHashRoundTrip.pathname}${urlAfterHashRoundTrip.hash}`).toBe("/#start");
     await expect(page.locator("#settled-target-content")).toHaveCount(0);
 
     await page.goto(baseUrl);

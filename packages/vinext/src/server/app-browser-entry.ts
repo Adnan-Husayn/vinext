@@ -423,6 +423,11 @@ let latestRscHmrUpdateId = 0;
 // navigation. This is intentionally not a per-navigation set — a future
 // asynchronous scroll restore for an older navId is already stale.
 let synchronousPopstateScrollRestoreNavigationId: number | null = null;
+// Advanced by every same-document URL commit (hash-only navigations and
+// same-route traversals). Those return before beginNavigation(), so this is
+// how an awaiting navigation detects newer intent that left the URL unchanged
+// on net (for example #a -> #b -> #a).
+let sameDocumentNavigationCount = 0;
 
 // Vite can notify the browser about an RSC HMR update before the dev server's
 // request runner has swapped to the invalidated module graph. Give the
@@ -2742,11 +2747,18 @@ function bootstrapHydration(
           })
         ) {
           const hrefBeforePaintYield = window.location.href;
+          const sameDocumentNavigationCountBeforePaintYield = sameDocumentNavigationCount;
           await waitForNextPaint();
           // A hash-only navigation updates the URL without starting an RSC
-          // navigation, so the id check below cannot see it. Any URL change
-          // during the frame is newer intent than this commit.
-          if (window.location.href !== hrefBeforePaintYield) return;
+          // navigation, so the id check below cannot see it. Any same-document
+          // navigation or URL change during the frame is newer intent than
+          // this commit.
+          if (
+            sameDocumentNavigationCount !== sameDocumentNavigationCountBeforePaintYield ||
+            window.location.href !== hrefBeforePaintYield
+          ) {
+            return;
+          }
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -2935,8 +2947,10 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
-    commitHashNavigation: (href, historyUpdateMode, scroll) =>
-      historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    commitHashNavigation: (href, historyUpdateMode, scroll) => {
+      sameDocumentNavigationCount += 1;
+      historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll);
+    },
     getPrefetchRouterState: () => {
       if (!browserNavigationController.hasBrowserRouterState()) {
         if (initialPrefetchRouterState) return initialPrefetchRouterState;
@@ -3013,6 +3027,7 @@ function bootstrapHydration(
         isSameAppRouteTarget: isSameAppRoutePopstateTarget(href),
       })
     ) {
+      sameDocumentNavigationCount += 1;
       notifyAppRouterTransitionStart(href, "traverse");
       historyController.commitTraversalIndexFromHistoryState(event.state);
       commitClientNavigationState();
