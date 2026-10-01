@@ -466,7 +466,7 @@ function restoreHistoryStateSnapshot(
   clientNavigationCacheGeneration += 1;
   deleteInvalidatedHistoryRestoreEntries(visitedResponseCache);
   disableNavigationResponsePrefetchCacheReuse();
-  commitClientNavigationState(navId, { releaseSnapshot: true });
+  commitClientNavigationState(navId, { releaseSnapshot: false });
   return true;
 }
 
