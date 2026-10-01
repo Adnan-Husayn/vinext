@@ -1395,6 +1395,35 @@ describe("out-of-basePath rejection", () => {
     expect(result.response.status).toBe(404);
   });
 
+  // Next.js test/e2e/basepath/basepath.test.ts: "should add header without
+  // basePath when set to false" (the path is a 404 outside basePath).
+  it("keeps middleware and basePath: false config headers on the 404", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/add-header-no-basepath"),
+      baseDeps({
+        basePath: "/base",
+        hadBasePath: false,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ responseHeaders: new Headers({ "x-mw": "ran" }) }),
+        configHeaders: [
+          {
+            source: "/add-header-no-basepath",
+            basePath: false,
+            headers: [{ key: "x-hello", value: "world" }],
+          },
+          { source: "/add-header-no-basepath", headers: [{ key: "x-inside", value: "yes" }] },
+        ],
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(result.response.headers.get("x-mw")).toBe("ran");
+    expect(result.response.headers.get("x-hello")).toBe("world");
+    expect(result.response.headers.get("x-inside")).toBeNull();
+  });
+
   it("allows requests outside basePath when beforeFiles rewrite fires", async () => {
     const renderPage = makeRenderPage(200);
     const req = makeRequest("/outside");

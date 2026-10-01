@@ -103,11 +103,26 @@ describe.each(FIXTURES)("dev basePath boundary ($name)", ({ dir, appRouter }) =>
     expect(res.status).toBe(404);
   });
 
-  // redirect-and-rewrite.test.ts: "should rewrite without basePath when set to false"
-  it("applies basePath: false rewrites", async () => {
-    const res = await fetch(`${baseUrl}/proxy-no-basepath/api/items?id=1`);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe("upstream /api/items?id=1");
+  // redirect-and-rewrite.test.ts: "should rewrite with basePath by default",
+  // "should not rewrite without basePath without disabling",
+  // "should not rewrite with basePath when set to false" and
+  // "should rewrite without basePath when set to false". Next.js only accepts
+  // external destinations for `basePath: false` rewrites.
+  it("applies rewrites on the matching side of the basePath", async () => {
+    const inside = await fetch(`${baseUrl}/base/rewrite-1`);
+    expect(inside.status).toBe(200);
+    expect(await inside.text()).toContain("Hello World");
+
+    const outsideDefault = await fetch(`${baseUrl}/rewrite-1`);
+    expect(outsideDefault.status).toBe(404);
+
+    const insideDisabled = await fetch(`${baseUrl}/base/proxy-no-basepath/api/items`);
+    expect(insideDisabled.status).toBe(404);
+    expect(await insideDisabled.text()).not.toContain("upstream");
+
+    const outside = await fetch(`${baseUrl}/proxy-no-basepath/api/items?id=1`);
+    expect(outside.status).toBe(200);
+    expect(await outside.text()).toBe("upstream /api/items?id=1");
   });
 
   // redirect-and-rewrite.test.ts: "should redirect with basePath by default",
@@ -130,17 +145,33 @@ describe.each(FIXTURES)("dev basePath boundary ($name)", ({ dir, appRouter }) =>
     );
   });
 
-  // basepath.test.ts: the "should (not) add header with/without basePath"
-  // cases, plus middleware observing nextUrl.basePath on both sides.
-  it("runs middleware and headers on the matching side of the basePath", async () => {
-    const inside = await fetch(`${baseUrl}/base/echo`);
-    expect(await inside.json()).toEqual({ basePath: "/base", pathname: "/echo" });
-    expect(inside.headers.get("x-inside")).toBe("yes");
-    expect(inside.headers.get("x-outside")).toBeNull();
+  // basepath.test.ts: "should add header with basePath by default",
+  // "should not add header without basePath without disabling",
+  // "should not add header with basePath when set to false" and
+  // "should add header without basePath when set to false". Paths without a
+  // page are 404s, which still carry the matched headers.
+  it("applies headers on the matching side of the basePath", async () => {
+    const cases: Array<[string, string | null]> = [
+      ["/base/add-header", "world"],
+      ["/add-header", null],
+      ["/base/add-header-no-basepath", null],
+      ["/add-header-no-basepath", "world"],
+    ];
+    for (const [pathname, expected] of cases) {
+      const res = await fetch(`${baseUrl}${pathname}`);
+      expect(res.status, pathname).toBe(404);
+      expect(res.headers.get("x-hello"), pathname).toBe(expected);
+    }
+  });
 
-    const outside = await fetch(`${baseUrl}/echo`);
-    expect(await outside.json()).toEqual({ basePath: "", pathname: "/echo" });
-    expect(outside.headers.get("x-inside")).toBeNull();
-    expect(outside.headers.get("x-outside")).toBe("yes");
+  // Matches next@16.2.7: matcher-less middleware runs outside basePath with an
+  // empty nextUrl.basePath, and its headers reach the 404.
+  it("runs middleware on both sides of the basePath", async () => {
+    const inside = await fetch(`${baseUrl}/base/hello`);
+    expect(inside.headers.get("x-mw")).toBe("/base|/hello");
+
+    const outside = await fetch(`${baseUrl}/hello`);
+    expect(outside.status).toBe(404);
+    expect(outside.headers.get("x-mw")).toBe("(none)|/hello");
   });
 });

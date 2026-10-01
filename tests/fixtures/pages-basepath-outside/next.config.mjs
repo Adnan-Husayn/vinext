@@ -6,6 +6,7 @@ export default {
   basePath: "/base",
   async rewrites() {
     return [
+      { source: "/rewrite-1", destination: "/hello" },
       { source: "/proxy-no-basepath/:path*", destination: `${upstream}/:path*`, basePath: false },
     ];
   },
@@ -22,8 +23,12 @@ export default {
   },
   async headers() {
     return [
-      { source: "/echo", headers: [{ key: "x-inside", value: "yes" }] },
-      { source: "/echo", basePath: false, headers: [{ key: "x-outside", value: "yes" }] },
+      { source: "/add-header", headers: [{ key: "x-hello", value: "world" }] },
+      {
+        source: "/add-header-no-basepath",
+        basePath: false,
+        headers: [{ key: "x-hello", value: "world" }],
+      },
     ];
   },
 };
