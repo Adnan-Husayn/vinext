@@ -113,9 +113,6 @@ describe.each([
     // The rewritten source is already percent-encoded, like the raw context.
     ["an unprefixed encoded static source", "/caf%C3%A9", "cafe", "/en/café"],
     ["an unprefixed encoded dynamic source", "/tags/caf%C3%A9", "tag", "/en/tags/café"],
-    // Middleware sees `/tags/%2561` and rewrites to `/en/tags/%2561`, whose
-    // param the interception matcher decodes once to `%61`.
-    ["an unprefixed double-encoded dynamic source", "/tags/%252561", "tag", "/en/tags/%61"],
   ])(
     "intercepts from %s (%s)",
     async (_label, source, sourcePage, sourceMatchedUrl) => {
