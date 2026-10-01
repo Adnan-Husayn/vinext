@@ -4,8 +4,9 @@ import {
   matchRoutePatternPrefix,
   matchRoutePatternWithOptionalDynamicSegments,
 } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { normalizePathnameForRouteMatch, splitPathnameForRouteMatch } from "../routing/utils.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { normalizePath } from "./normalize-path.js";
 
 type ResolveManifestNavigationInterceptionContextOptions = {
   basePath: string;
@@ -84,19 +85,21 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
 }
 
 /**
- * The matched route pathname is decoded, but the server matches the context
- * on its raw segments, so send it encoded as the URL parser encodes it (`café`
- * becomes `caf%C3%A9`). A decoded `%` cannot be re-encoded reliably, since
- * encoded path delimiters stay escaped while literal percent signs do not, and
- * a backslash or dot segment would change the path's structure, so navigate
- * without interception for those instead.
+ * The matched route pathname is the matched URL decoded once per segment, with
+ * path delimiters (and literal `%2F`-style text) re-escaped. The server matches
+ * the context on its raw segments, so undo that: keep the escaped delimiters and
+ * encode every other `%`, then let the URL parser encode the rest (`café`
+ * becomes `caf%C3%A9`). The result must reproduce the same matched pathname;
+ * otherwise the URL parser changed it (stripping a control character, say), so
+ * navigate without interception rather than name a different source.
  */
 function encodeMatchedPathname(pathname: string): string | null {
-  if (pathname.includes("%") || pathname.includes("\\")) return null;
-  if (pathname.split("/").some((segment) => segment === "." || segment === "..")) return null;
+  let encoded: string;
   try {
-    return new URL(pathname, "http://n").pathname;
+    encoded = new URL(pathname.replace(/%(?!(?:25)?(?:2f|23|3f|5c))/gi, "%25"), "http://n")
+      .pathname;
   } catch {
     return null;
   }
+  return normalizePath(normalizePathnameForRouteMatch(encoded)) === pathname ? encoded : null;
 }

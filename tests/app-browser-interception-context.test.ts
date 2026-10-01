@@ -141,8 +141,34 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
     ).toBe("/interception-mw/en/tags/caf%C3%A9");
   });
 
-  it.each(["/interception-mw/100%", "/interception-mw/%61", "/interception-mw/a%2Fb"])(
-    "does not send the decoded matched pathname %s, which cannot be re-encoded reliably",
+  it.each([
+    ["/interception-mw/100%", "/interception-mw/100%25"],
+    ["/interception-mw/%61", "/interception-mw/%2561"],
+    ["/interception-mw/%2561", "/interception-mw/%252561"],
+    ["/interception-mw/a%2Fb", "/interception-mw/a%2Fb"],
+    ["/interception-mw/a%5Cb", "/interception-mw/a%5Cb"],
+    ["/interception-mw/a b", "/interception-mw/a%20b"],
+  ])("re-encodes the decoded matched pathname %s as %s", (currentMatchedPathname, expected) => {
+    expect(
+      resolveMiddlewareRewriteNavigationInterceptionContext({
+        basePath: "",
+        currentMatchedPathname,
+        currentPathname: "/interception-mw",
+        routeManifest: createRouteManifest([localePhotoInterception]),
+        targetPathname: "/interception-mw/foo/p/1",
+      }),
+    ).toBe(expected);
+  });
+
+  // The URL parser strips TAB, LF and CR and trailing spaces, so these would
+  // name a different source.
+  it.each([
+    "/interception-mw/a\tb",
+    "/interception-mw/a\nb",
+    "/interception-mw/a\rb",
+    "/interception-mw/a ",
+  ])(
+    "does not send a decoded matched pathname the URL parser changes (%j)",
     (currentMatchedPathname) => {
       expect(
         resolveMiddlewareRewriteNavigationInterceptionContext({
