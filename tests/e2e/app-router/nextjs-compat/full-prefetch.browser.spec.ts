@@ -70,6 +70,7 @@ export default function HomePage() {
     <Link href="/target" id="full-prefetch-link" prefetch={true}>Target</Link>
     <Link href="/settled-target" id="settled-prefetch-link" prefetch={true}>Settled target</Link>
     <Link href="/no-prefetch-target" id="no-prefetch-link" prefetch={false}>No prefetch target</Link>
+    <Link href="#later" id="hash-link">Later</Link>
   </>;
 }
 `,
@@ -311,6 +312,29 @@ test("a settled prepared prefetch commits after the initiating click's frame", a
       }),
     ).toEqual({ afterNextFrame: "Settled prefetch page content", inClickTask: null });
     expect(settledTargetRequestsAfterClick).toBe(0);
+
+    // A hash-only navigation during that frame is newer intent. It starts no
+    // RSC navigation, so the prepared commit must notice the URL change itself.
+    const resettledFullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/settled-target" &&
+        url.searchParams.has("_rsc") &&
+        response.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await (await resettledFullResponse).finished();
+    await page.waitForTimeout(50);
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
+      document.querySelector<HTMLElement>("#hash-link")?.click();
+    });
+    await page.waitForTimeout(250);
+    const urlAfterHashNavigation = new URL(page.url());
+    expect(`${urlAfterHashNavigation.pathname}${urlAfterHashNavigation.hash}`).toBe("/#later");
+    await expect(page.locator("#settled-target-content")).toHaveCount(0);
 
     await page.goto(baseUrl);
     await waitForAppRouterHydration(page);

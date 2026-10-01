@@ -2741,7 +2741,12 @@ function bootstrapHydration(
             visibleCommitMode,
           })
         ) {
+          const hrefBeforePaintYield = window.location.href;
           await waitForNextPaint();
+          // A hash-only navigation updates the URL without starting an RSC
+          // navigation, so the id check below cannot see it. Any URL change
+          // during the frame is newer intent than this commit.
+          if (window.location.href !== hrefBeforePaintYield) return;
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
