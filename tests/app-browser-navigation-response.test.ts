@@ -15,12 +15,16 @@ describe("live navigation fetch", () => {
     expect(fetchResponse).toHaveBeenCalledTimes(1);
   });
 
-  it("issues the request lazily when it was never started", async () => {
+  it("issues the request lazily, at most once, when it was never started", async () => {
     const response = new Response("flight");
     const fetchResponse = vi.fn(() => Promise.resolve(response));
     const liveFetch = createLiveNavigationFetch(fetchResponse);
 
     expect(fetchResponse).not.toHaveBeenCalled();
+    await expect(liveFetch.take()).resolves.toBe(response);
+    expect(fetchResponse).toHaveBeenCalledTimes(1);
+
+    liveFetch.start();
     await expect(liveFetch.take()).resolves.toBe(response);
     expect(fetchResponse).toHaveBeenCalledTimes(1);
   });

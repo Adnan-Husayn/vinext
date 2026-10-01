@@ -44,7 +44,7 @@ export function createLiveNavigationFetch(
       response.catch(() => {});
     },
     take() {
-      return response ?? fetchResponse();
+      return (response ??= fetchResponse());
     },
   };
 }
