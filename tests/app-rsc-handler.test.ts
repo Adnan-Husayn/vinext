@@ -30,6 +30,8 @@ import {
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
@@ -7875,6 +7877,75 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("page");
     expect(dispatchedRequest).toBe(request);
   });
+
+  it("marks a clean forwarded Server Action request as forwarded", async () => {
+    // The forwarded request carries no internal headers, so the forwarding
+    // context alone must still route it through header injection.
+    let dispatchedRequest: Request | undefined;
+    const handler = createHandler({
+      dispatchMatchedPage: async (options) => {
+        dispatchedRequest = options.request;
+        return new Response("page");
+      },
+    });
+    const request = new Request("https://example.test/docs/about", {
+      headers: { accept: "text/html" },
+    });
+
+    const response = await handler(request, { actionForwarded: true, waitUntil() {} });
+
+    expect(await response.text()).toBe("page");
+    expect(dispatchedRequest).not.toBe(request);
+    expect(dispatchedRequest!.headers.get("x-action-forwarded")).toBe("1");
+  });
+
+  // The independent request stage strips these headers before handing the
+  // validated state over explicitly, so each must still reach the dispatch.
+  it.each([
+    {
+      name: "route params",
+      state: {
+        routeParams: { routePattern: "/docs/[slug]", params: { slug: "about" } },
+        speculative: false,
+      },
+      expectedHeaders: {
+        [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: encodeURIComponent(
+          JSON.stringify({ routePattern: "/docs/[slug]", params: { slug: "about" } }),
+        ),
+        [VINEXT_PRERENDER_SPECULATIVE_HEADER]: null,
+      },
+    },
+    {
+      name: "speculative flag",
+      state: { routeParams: null, speculative: true },
+      expectedHeaders: {
+        [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: null,
+        [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "1",
+      },
+    },
+  ])(
+    "re-attaches transported prerender $name to a clean request",
+    async ({ state, expectedHeaders }) => {
+      let dispatchedRequest: Request | undefined;
+      const handler = createHandler({
+        dispatchMatchedPage: async (options) => {
+          dispatchedRequest = options.request;
+          return new Response("page");
+        },
+      });
+      const request = new Request("https://example.test/docs/about", {
+        headers: { accept: "text/html" },
+      });
+
+      const response = await handler(request, null, false, undefined, null, state);
+
+      expect(await response.text()).toBe("page");
+      expect(dispatchedRequest).not.toBe(request);
+      for (const [name, value] of Object.entries(expectedHeaders)) {
+        expect(dispatchedRequest!.headers.get(name)).toBe(value);
+      }
+    },
+  );
 
   it("still normalizes Request subclasses such as runtime adapter wrappers", async () => {
     // srvx's dev-server NodeRequest reads .get() from live Node headers while

@@ -492,13 +492,22 @@ describe("App Router Production server worker entry compatibility", () => {
           },
         });
 
+        // The secret is not in the stripped header set, so it alone must still
+        // take the filtering path instead of being forwarded as-is.
+        const secretOnly = new Request("https://example.com/page", {
+          headers: { accept: "text/html", [VINEXT_PRERENDER_SECRET_HEADER]: "guess" },
+        });
+
         expect(await (await handle(clean)).text()).toBe("ok");
         expect(await (await handle(spoofed)).text()).toBe("ok");
+        expect(await (await handle(secretOnly)).text()).toBe("ok");
 
-        expect(capturedRequests).toHaveLength(2);
+        expect(capturedRequests).toHaveLength(3);
         expect(capturedRequests[0]).toBe(clean);
         expect(capturedRequests[1]).not.toBe(spoofed);
         expect([...capturedRequests[1].headers.keys()]).toEqual(["accept"]);
+        expect(capturedRequests[2]).not.toBe(secretOnly);
+        expect([...capturedRequests[2].headers.keys()]).toEqual(["accept"]);
       } finally {
         await server?.close();
         Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);

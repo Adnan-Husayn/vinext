@@ -1110,8 +1110,8 @@ describe("hasInternalHeaders", () => {
   );
 
   it("matches mixed-case keys from Headers-like adapters case-insensitively", () => {
-    // Runtime adapters such as srvx's NodeRequestHeaders implement keys()
-    // themselves, so do not rely on the platform lowercasing header names.
+    // Kept case-insensitive to match filterInternalHeaders for non-native
+    // Headers-like inputs.
     const headers = {
       keys: () => ["Accept", "X-Middleware-Rewrite"][Symbol.iterator](),
     } as unknown as Headers;
