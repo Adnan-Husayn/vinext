@@ -651,6 +651,38 @@ describe("createAppRscHandler", () => {
     expect(new URL(mountedRequest.url).searchParams.get("_rsc")).not.toBe("");
   });
 
+  it("marks build-time hybrid Pages renders whose URL a rewrite changed", async () => {
+    const handler = createHandler({
+      configRewrites: {
+        afterFiles: [],
+        beforeFiles: [
+          {
+            source: "/account",
+            missing: [{ type: "cookie", key: "session" }],
+            destination: "/login",
+          },
+        ],
+        fallback: [],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async () => new Response("page"),
+    });
+    const marker = async (pathname: string) =>
+      (await handler(new Request(`https://example.test/docs${pathname}`), null)).headers.get(
+        "x-vinext-prerender-rewritten",
+      );
+
+    try {
+      expect(await marker("/account")).toBeNull();
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      expect(await marker("/account")).toBe("1");
+      expect(await marker("/about")).toBe("0");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   describe("query-free cache identity", () => {
     function useQueryFreeIdentityAdapter(
       overrides: Partial<Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission">> = {},

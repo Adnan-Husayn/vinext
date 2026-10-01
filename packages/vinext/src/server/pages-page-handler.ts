@@ -13,6 +13,7 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
@@ -49,7 +50,7 @@ import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import {
   isrGet,
   isrSet,
-  isrCacheKey,
+  pagesIsrCacheKey,
   coalesceOnDemandRevalidation,
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
@@ -465,15 +466,8 @@ export function createPagesPageHandler(
   function isrCacheKeyForRequest(
     i18nCacheVariant: string | null,
   ): (router: string, pathname: string) => string {
-    if (!i18nCacheVariant) {
-      return (router, pathname) => isrCacheKey(router, pathname, buildId ?? undefined);
-    }
-    return (router, pathname) =>
-      isrCacheKey(
-        router,
-        pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant),
-        buildId ?? undefined,
-      );
+    return (_router, pathname) =>
+      pagesIsrCacheKey(pathname, buildId ?? undefined, i18nCacheVariant);
   }
 
   // The recursive render function — defined inside so it can self-call for
@@ -707,10 +701,14 @@ export function createPagesPageHandler(
         // custom 404 module (and its getStaticProps) runs. Keep this separate
         // from routeUrl so router, _document, and getInitialProps contexts
         // continue to observe the original request-facing URL.
+        // The prerenderer stores _error's 404 document as /404; its 500
+        // representation must never reuse that snapshot.
         const isrCachePathname =
-          isStaticPropsRender &&
+          (isStaticPropsRender || pagesReadiness.autoExport) &&
           (routePattern === "/404" || routePattern === "/500" || routePattern === "/_error")
-            ? routePattern
+            ? routePattern === "/_error" && renderStatusCode === 404
+              ? "/404"
+              : routePattern
             : renderRouteUrl.split("?")[0];
         const isNotFoundErrorRender =
           routePattern === "/404" || (routePattern === "/_error" && renderStatusCode === 404);
@@ -904,8 +902,10 @@ export function createPagesPageHandler(
           },
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
+          staticPathsDefaultLocale: i18nConfig?.defaultLocale,
           isrCacheKey: pageIsrCacheKey,
           isrGet: routeIsrGet,
+          hasPrerenderedPages: getCdnCacheAdapter().hasPrerenderedPages,
           isrSet: routeIsrSet,
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
@@ -968,6 +968,7 @@ export function createPagesPageHandler(
           sanitizeDestination,
           scriptNonce,
           statusCode: renderStatusCode,
+          notFoundSourceHeaders: options?.__notFoundSourceHeaders,
           triggerBackgroundRegeneration,
           vinext: serializedPagesNextData.__vinext,
           nextData: serializedPagesNextData,

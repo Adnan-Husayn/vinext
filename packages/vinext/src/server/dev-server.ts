@@ -998,7 +998,7 @@ export function createSSRHandler(
         if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
           const pathsResult = await pageModule.getStaticPaths({
             locales: i18nConfig?.locales ?? [],
-            defaultLocale: currentDefaultLocale ?? "",
+            defaultLocale: i18nConfig?.defaultLocale ?? "",
           });
           const fallback = pathsResult?.fallback ?? false;
 
@@ -1006,7 +1006,11 @@ export function createSSRHandler(
           const routePattern = patternToNextFormat(route.pattern);
           const routeParams = getPagesRouteParams(routePattern);
           const isValidPath = paths.some((pathEntry) =>
-            matchesPagesStaticPath(pathEntry, params, routeParams, url),
+            matchesPagesStaticPath(pathEntry, params, routeParams, localeStrippedUrl, {
+              locale,
+              locales: i18nConfig?.locales,
+              defaultLocale: i18nConfig?.defaultLocale,
+            }),
           );
 
           if (fallback === false && !isValidPath && requestPreviewData === false) {
