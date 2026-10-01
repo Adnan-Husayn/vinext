@@ -1563,6 +1563,29 @@ describe("process.env.__VINEXT_HAS_PAGES_ROUTER define", () => {
     ).resolves.toBe('"true"');
   }, 15000);
 
+  it.each([
+    [
+      "an external rewrite",
+      `{ source: "/docs/:path*", destination: "https://docs.example.com/:path*" }`,
+    ],
+    [
+      "a server-evaluated rewrite",
+      `{ source: "/:path*", has: [{ type: "cookie", key: "beta" }], destination: "/beta/:path*" }`,
+    ],
+  ])(
+    "keeps the pages/ directory check for App Router builds with %s",
+    async (_name, rewrite) => {
+      await expect(
+        resolveHasPagesRouterDefine(
+          { ...appFiles, ...contentOnlyPagesFiles },
+          "build",
+          `export default { async rewrites() { return [${rewrite}]; } };`,
+        ),
+      ).resolves.toBe('"true"');
+    },
+    15000,
+  );
+
   it("keeps the pages/ directory check in dev", async () => {
     await expect(
       resolveHasPagesRouterDefine({ ...appFiles, ...contentOnlyPagesFiles }, "serve"),
