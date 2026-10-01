@@ -161,14 +161,18 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
   });
 
   // The URL parser strips TAB, LF and CR and trailing spaces, so these would
-  // name a different source.
+  // name a different source; `%252F` stands for both `%252F` and `%25252F`.
   it.each([
     "/interception-mw/a\tb",
     "/interception-mw/a\nb",
     "/interception-mw/a\rb",
     "/interception-mw/a ",
+    "/interception-mw/%252F",
+    "/interception-mw/%2523",
+    "/interception-mw/%253f",
+    "/interception-mw/%255C",
   ])(
-    "does not send a decoded matched pathname the URL parser changes (%j)",
+    "does not send an ambiguous or URL-parser-changed matched pathname (%j)",
     (currentMatchedPathname) => {
       expect(
         resolveMiddlewareRewriteNavigationInterceptionContext({
