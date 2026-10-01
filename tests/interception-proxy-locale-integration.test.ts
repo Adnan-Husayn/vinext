@@ -119,9 +119,19 @@ describe.each([
     ["an unprefixed encoded-percent dynamic source", "/tags/%2561", "tag", "/en/tags/%61"],
     ["an unprefixed double-encoded dynamic source", "/tags/%252561", "tag", "/en/tags/%2561"],
     ["an unprefixed literal-percent dynamic source", "/tags/100%25", "tag", "/en/tags/100%"],
+    // Params are canonical, as in Next.js: an escaped ASCII character renders
+    // unescaped (Next.js renders `tag` "a" here and sends `Next-Url: /en/tags/a`).
+    ["an unprefixed escaped-ASCII dynamic source", "/tags/%61", "tag", "/en/tags/a", "a"],
+    ["an escaped-ASCII source as the client sends it", "/en/tags/a", "tag", "/en/tags/a"],
   ])(
     "intercepts from %s (%s)",
-    async (_label, source, sourcePage, sourceMatchedUrl) => {
+    async (
+      _label,
+      source,
+      sourcePage,
+      sourceMatchedUrl,
+      tag = source.slice(source.lastIndexOf("/") + 1),
+    ) => {
       if (!server) throw new Error("Interception fixture server did not start");
       const { body, ...result } = await fetchSoftNavigation(server.baseUrl, source);
       expect(result).toEqual({
@@ -135,7 +145,7 @@ describe.each([
       expect(body).toContain(`"sourceMatchedUrl":"${sourceMatchedUrl}"`);
       if (sourcePage === "tag") {
         // The source renders with the params a direct request to it gets.
-        expect(body).toContain(`tag=${source.slice(source.lastIndexOf("/") + 1)};`);
+        expect(body).toContain(`tag=${tag};`);
       }
     },
     30_000,

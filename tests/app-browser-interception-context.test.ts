@@ -122,24 +122,37 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
 
   // The matched pathname is decoded, while the server matches the context on
   // its raw segments, so it is sent encoded the way the URL parser encodes it.
-  it("encodes a decoded matched pathname that only matches after the rewrite", () => {
-    const tagPhotoInterception: RouteManifestInterception = {
-      ...localePhotoInterception,
-      id: "interception:slot:modal:/interception-mw/:locale/tags/:tag->/interception-mw/:locale/:username/p/:id",
-      sourcePattern: "/interception-mw/:locale/tags/:tag",
-      sourcePatternParts: ["interception-mw", ":locale", "tags", ":tag"],
-    };
+  // Next.js sends `Next-Url: /en/tags/a` from `/tags/%61` too: params are
+  // canonical, so `%61` and `a` name the same source.
+  it.each([
+    [
+      "/interception-mw/tags/caf%C3%A9",
+      "/interception-mw/en/tags/café",
+      "/interception-mw/en/tags/caf%C3%A9",
+    ],
+    ["/interception-mw/tags/%61", "/interception-mw/en/tags/a", "/interception-mw/en/tags/a"],
+    ["/interception-mw/tags/%7e", "/interception-mw/en/tags/~", "/interception-mw/en/tags/~"],
+  ])(
+    "encodes the matched pathname of %s that only matches after the rewrite",
+    (currentPathname, currentMatchedPathname, expected) => {
+      const tagPhotoInterception: RouteManifestInterception = {
+        ...localePhotoInterception,
+        id: "interception:slot:modal:/interception-mw/:locale/tags/:tag->/interception-mw/:locale/:username/p/:id",
+        sourcePattern: "/interception-mw/:locale/tags/:tag",
+        sourcePatternParts: ["interception-mw", ":locale", "tags", ":tag"],
+      };
 
-    expect(
-      resolveMiddlewareRewriteNavigationInterceptionContext({
-        basePath: "",
-        currentMatchedPathname: "/interception-mw/en/tags/café",
-        currentPathname: "/interception-mw/tags/caf%C3%A9",
-        routeManifest: createRouteManifest([tagPhotoInterception]),
-        targetPathname: "/interception-mw/foo/p/1",
-      }),
-    ).toBe("/interception-mw/en/tags/caf%C3%A9");
-  });
+      expect(
+        resolveMiddlewareRewriteNavigationInterceptionContext({
+          basePath: "",
+          currentMatchedPathname,
+          currentPathname,
+          routeManifest: createRouteManifest([tagPhotoInterception]),
+          targetPathname: "/interception-mw/foo/p/1",
+        }),
+      ).toBe(expected);
+    },
+  );
 
   it.each([
     ["/interception-mw/100%", "/interception-mw/100%25"],
