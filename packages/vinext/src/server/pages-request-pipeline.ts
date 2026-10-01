@@ -719,8 +719,8 @@ export async function runPagesRequest(
     isNextStaticPath(resolvedPathname, "", assetPrefixPathname(deps.assetPrefix ?? ""));
   const isOutsideBasePathUnclaimed = () =>
     basePath && !hadBasePath && !configRewriteFired && !middlewareRewriteFired;
-  // Like any other response, the 404 carries middleware headers and the
-  // `basePath: false` config headers staged for this request.
+  // Like any other response, the 404 carries the middleware headers and status
+  // and the `basePath: false` config headers staged for this request.
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
     type: "response",
     response: isMissingBuildAsset()
@@ -731,6 +731,7 @@ export async function runPagesRequest(
             headers: { "Content-Type": "text/html; charset=utf-8" },
           }),
           middlewareHeaders,
+          middlewareStatus,
         ),
   });
 

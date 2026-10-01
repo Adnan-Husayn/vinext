@@ -2278,6 +2278,19 @@ describe("basePath + trailingSlash interaction", () => {
     expect(location).toBe("/app/about/");
   });
 
+  // Next.js adds a built-in basePath -> basePath + "/" redirect for
+  // trailingSlash: true (load-custom-routes.ts).
+  it("GET /app redirects to /app/ with trailingSlash:true", async () => {
+    for (const [pathname, expected] of [
+      ["/app", "/app/"],
+      ["/app?x=1", "/app/?x=1"],
+    ]) {
+      const res = await fetch(`${tsBaseUrl}${pathname}`, { redirect: "manual" });
+      expect(res.status, pathname).toBe(308);
+      expect(res.headers.get("location"), pathname).toBe(expected);
+    }
+  });
+
   it("GET /app/about/ serves the about page with trailingSlash:true", async () => {
     const res = await fetch(`${tsBaseUrl}/app/about/`);
     expect(res.status).toBe(200);

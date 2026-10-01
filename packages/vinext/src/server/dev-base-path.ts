@@ -29,7 +29,9 @@ function pathnameOf(url: string): string {
  *   `basePath: false` rewrites, redirects and headers apply (and anything
  *   unclaimed gets the framework's own 404).
  *
- * The bare basePath is passed to Vite as `basePath + "/"`. Requests outside
+ * The bare basePath is passed to Vite as `basePath + "/"`, or with
+ * `trailingSlash: true` redirected there, as Next.js's built-in
+ * `basePath -> basePath + "/"` redirect does. Requests outside
  * basePath are marked and passed on with their URL untouched. Vite's own
  * middlewares after the base middleware (public files, module transforms,
  * static files, the HTML fallback) must skip them, as they did when Vite
@@ -39,7 +41,11 @@ function pathnameOf(url: string): string {
  * captured the Vite middlewares it invokes itself and replaced any of their
  * handles.
  */
-export function patchViteBaseMiddleware(server: ViteDevServer, basePath: string): () => void {
+export function patchViteBaseMiddleware(
+  server: ViteDevServer,
+  basePath: string,
+  trailingSlash: boolean,
+): () => void {
   if (!basePath) return () => {};
   const stack = server.middlewares.stack;
   const baseIndex = stack.findIndex(
@@ -52,7 +58,13 @@ export function patchViteBaseMiddleware(server: ViteDevServer, basePath: string)
     const url = req.url ?? "/";
     const pathname = pathnameOf(url);
     if (pathname === basePath) {
-      req.url = `${basePath}/${url.slice(pathname.length)}`;
+      const baseRootUrl = `${basePath}/${url.slice(pathname.length)}`;
+      if (trailingSlash) {
+        res.writeHead(308, { Location: baseRootUrl });
+        res.end();
+        return;
+      }
+      req.url = baseRootUrl;
       return viteBaseMiddleware(req, res, next);
     }
     if (!hasBasePath(pathname, basePath)) {

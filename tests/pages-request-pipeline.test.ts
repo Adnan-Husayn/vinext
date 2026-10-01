@@ -1424,6 +1424,21 @@ describe("out-of-basePath rejection", () => {
     expect(result.response.headers.get("x-inside")).toBeNull();
   });
 
+  it("applies the middleware status to the 404 outside basePath", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/outside"),
+      baseDeps({
+        basePath: "/base",
+        hadBasePath: false,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ status: 403 }),
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(403);
+  });
+
   it("allows requests outside basePath when middleware rewrites them", async () => {
     const renderPage = makeRenderPage(200);
     const result = await runPagesRequest(

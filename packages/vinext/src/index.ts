@@ -6092,6 +6092,7 @@ export const loadServerActionClient = ${
           const skipViteInternalsOutsideBasePath = patchViteBaseMiddleware(
             server,
             nextConfig?.basePath ?? "",
+            nextConfig?.trailingSlash ?? false,
           );
           const viteFilesystemMiddlewares = server.middlewares.stack
             .filter(({ handle }) => {
