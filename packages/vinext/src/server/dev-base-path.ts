@@ -1,13 +1,5 @@
-import type { IncomingMessage } from "node:http";
 import type { Connect, ViteDevServer } from "vite";
 import { hasBasePath } from "../utils/base-path.js";
-
-/**
- * URL Vite's internal middlewares see for a request outside basePath. No
- * public file, module or asset lives here, so each of them passes the request
- * on instead of serving something Next.js would not serve outside basePath.
- */
-const OUTSIDE_BASE_PATH_PLACEHOLDER_URL = "/__vinext/outside-base-path";
 
 function pathnameOf(url: string): string {
   const end = url.search(/[?#]/);
@@ -26,19 +18,23 @@ function pathnameOf(url: string): string {
  *   unclaimed gets the framework's own 404).
  *
  * The bare basePath is passed to Vite as `basePath + "/"`. Requests outside
- * basePath skip Vite's internals under a placeholder URL and get their real
- * URL back from {@link restoreOutsideBasePathUrl} before vinext's handlers
- * run. Both keep `req.originalUrl`, which the App Router handler reads.
+ * basePath are marked and skip every middleware registered after Vite's base
+ * middleware so far (public files, module transforms, static files and the
+ * HTML fallback), as they did when Vite rejected them, and reach the
+ * middlewares vinext registers next with their URL untouched.
+ *
+ * Call this after vinext has captured the Vite middlewares it invokes itself.
  */
 export function patchViteBaseMiddleware(server: ViteDevServer, basePath: string): void {
   if (!basePath) return;
-  const entry = server.middlewares.stack.find(
+  const stack = server.middlewares.stack;
+  const baseIndex = stack.findIndex(
     ({ handle }) => typeof handle === "function" && handle.name === "viteBaseMiddleware",
   );
-  const viteBaseMiddleware = entry?.handle as Connect.NextHandleFunction | undefined;
-  if (!entry || !viteBaseMiddleware) return;
+  const viteBaseMiddleware = stack[baseIndex]?.handle as Connect.NextHandleFunction | undefined;
+  if (!viteBaseMiddleware) return;
 
-  const vinextBaseMiddleware: Connect.NextHandleFunction = (req, res, next) => {
+  stack[baseIndex].handle = function vinextBaseMiddleware(req, res, next) {
     const url = req.url ?? "/";
     const pathname = pathnameOf(url);
     if (pathname === basePath) {
@@ -47,16 +43,19 @@ export function patchViteBaseMiddleware(server: ViteDevServer, basePath: string)
     }
     if (!hasBasePath(pathname, basePath)) {
       req.__vinextOutsideBasePath = true;
-      req.url = OUTSIDE_BASE_PATH_PLACEHOLDER_URL;
       return next();
     }
     return viteBaseMiddleware(req, res, next);
-  };
-  entry.handle = vinextBaseMiddleware;
-}
+  } satisfies Connect.NextHandleFunction;
 
-/** Undo the placeholder URL set by {@link patchViteBaseMiddleware}. */
-export function restoreOutsideBasePathUrl(req: IncomingMessage): void {
-  if (!req.__vinextOutsideBasePath) return;
-  req.url = (req as Connect.IncomingMessage).originalUrl ?? req.__vinextOriginalEncodedUrl ?? "/";
+  for (const entry of stack.slice(baseIndex + 1)) {
+    const handle = entry.handle;
+    // Connect only calls 4-argument handles for errors; leave those alone.
+    if (typeof handle !== "function" || handle.length === 4) continue;
+    const middleware = handle as Connect.NextHandleFunction;
+    entry.handle = function skipOutsideBasePath(req, res, next) {
+      if (req.__vinextOutsideBasePath) return next();
+      return middleware(req, res, next);
+    } satisfies Connect.NextHandleFunction;
+  }
 }

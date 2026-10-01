@@ -47,7 +47,7 @@ import {
   createValidFileMatcher,
   findFileWithExts,
 } from "./routing/file-matcher.js";
-import { patchViteBaseMiddleware, restoreOutsideBasePathUrl } from "./server/dev-base-path.js";
+import { patchViteBaseMiddleware } from "./server/dev-base-path.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import {
@@ -6089,14 +6089,6 @@ export const loadServerActionClient = ${
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
-          patchViteBaseMiddleware(server, nextConfig?.basePath ?? "");
-          // Requests outside basePath crossed Vite's internals under a
-          // placeholder URL; give vinext's handlers the real one back.
-          server.middlewares.use((req, _res, next) => {
-            restoreOutsideBasePathUrl(req);
-            next();
-          });
-
           const viteFilesystemMiddlewares = server.middlewares.stack
             .filter(({ handle }) => {
               const name = typeof handle === "function" ? handle.name : "";
@@ -6135,6 +6127,10 @@ export const loadServerActionClient = ${
               publicMiddlewareEntry.handle = vinextServePublicMiddleware;
             }
           }
+
+          // Runs after the lookups above, which keep the unwrapped Vite
+          // filesystem middlewares for rewrites served from public files.
+          patchViteBaseMiddleware(server, nextConfig?.basePath ?? "");
 
           const serveRewrittenViteFilesystemRoute = async (
             req: import("node:http").IncomingMessage,

@@ -12,8 +12,9 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import type { ViteDevServer } from "vite";
-import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
+import { createServer, type ViteDevServer } from "vite";
+import vinext from "../packages/vinext/src/index.js";
+import { createIsolatedFixture, startFixtureServer, testCacheDir } from "./helpers.js";
 
 const FIXTURES = [
   {
@@ -173,5 +174,65 @@ describe.each(FIXTURES)("dev basePath boundary ($name)", ({ dir, appRouter }) =>
     const outside = await fetch(`${baseUrl}/hello`);
     expect(outside.status).toBe(404);
     expect(outside.headers.get("x-mw")).toBe("(none)|/hello");
+  });
+});
+
+// Connect strips a mount prefix from req.url and keeps the full URL in
+// req.originalUrl. Pages Router routing must use the mount-relative URL. App
+// Router requests are dispatched by @vitejs/plugin-rsc, which restores
+// req.originalUrl, so mounting below a route does not apply to them.
+describe("dev basePath boundary mounted in middleware mode (Pages Router)", () => {
+  const dir = FIXTURES[1].dir;
+  let root: string;
+  let server: ViteDevServer;
+  let httpServer: http.Server;
+  let mountUrl: string;
+
+  beforeAll(async () => {
+    root = await createIsolatedFixture(dir, "vinext-basepath-outside-mounted-");
+    server = await createServer({
+      root,
+      cacheDir: testCacheDir(root),
+      configFile: false,
+      appType: "custom",
+      plugins: [vinext({ appDir: root })],
+      optimizeDeps: { holdUntilCrawlEnd: true },
+      server: { middlewareMode: true },
+      logLevel: "silent",
+    });
+    httpServer = http.createServer((req, res) => {
+      const url = req.url ?? "/";
+      if (!url.startsWith("/mount/")) {
+        res.writeHead(418).end();
+        return;
+      }
+      Object.assign(req, { originalUrl: url, url: url.slice("/mount".length) });
+      server.middlewares(req, res);
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+    const address = httpServer.address();
+    if (!address || typeof address === "string") throw new Error("server did not bind");
+    mountUrl = `http://127.0.0.1:${address.port}/mount`;
+  }, 60000);
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => httpServer?.close(() => resolve()));
+    await server?.close();
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("routes requests outside the basePath by their mount-relative URL", async () => {
+    const page = await fetch(`${mountUrl}/base/hello`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Hello World");
+
+    const rewrite = await fetch(`${mountUrl}/proxy-no-basepath/api/items?id=1`);
+    expect(rewrite.status).toBe(200);
+    expect(await rewrite.text()).toBe("upstream /api/items?id=1");
+
+    const header = await fetch(`${mountUrl}/add-header-no-basepath`);
+    expect(header.status).toBe(404);
+    expect(header.headers.get("x-hello")).toBe("world");
+    expect(header.headers.get("x-mw")).toBe("(none)|/add-header-no-basepath");
   });
 });
