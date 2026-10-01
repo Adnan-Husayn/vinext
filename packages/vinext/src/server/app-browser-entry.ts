@@ -200,6 +200,10 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
+  shouldYieldBeforePreparedPrefetchCommit,
+  waitForNextPaint,
+} from "./app-browser-paint-yield.js";
+import {
   peekSettledPrefetchResponseForNavigation,
   preserveCommittedPrefetchExpiry,
   prepareConsumedPrefetchResponseForPublication,
@@ -2726,6 +2730,18 @@ function bootstrapHydration(
           rscPayload = Promise.resolve(staticExportElements);
         }
 
+        // Let the frame for the triggering input paint before the synchronous
+        // commit below renders the whole destination route.
+        if (
+          shouldYieldBeforePreparedPrefetchCommit({
+            hasPreparedElements: prefetchedElements !== undefined,
+            navigationKind,
+            visibleCommitMode,
+          })
+        ) {
+          await waitForNextPaint();
+        }
+
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
         let committedState: AppRouterState | null = null;
@@ -2765,8 +2781,9 @@ function bootstrapHydration(
           targetHref: currentHref,
           traversalIntent: activeTraversalIntent,
           // Only a settled prefetch carrying already-decoded elements can
-          // commit within the initiating click task. Missing, in-flight, and
-          // preparation-failed entries keep the ordinary transition path.
+          // commit synchronously (ordinary navigations first yield a frame,
+          // above). Missing, in-flight, and preparation-failed entries keep
+          // the ordinary transition path.
           visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
         });
         if (renderOutcome !== "committed") return;

@@ -246,7 +246,7 @@ test("explicit full prefetch returns page content and shares its pending request
   }
 });
 
-test("only a settled prepared prefetch commits in the initiating click task", async ({ page }) => {
+test("a settled prepared prefetch commits after the initiating click's frame", async ({ page }) => {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-settled-prefetch-"));
   let server: Server | undefined;
 
@@ -286,12 +286,31 @@ test("only a settled prepared prefetch commits in the initiating click task", as
     // Preparation is CPU-local once the full response body settles.
     await page.waitForTimeout(50);
 
+    let settledTargetRequestsAfterClick = 0;
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/settled-target" && url.searchParams.has("_rsc")) {
+        settledTargetRequestsAfterClick += 1;
+      }
+    });
+    // The prepared commit renders synchronously, so it waits for the click's
+    // frame to paint instead of charging the destination render to the
+    // interaction (INP). It still lands by the following frame, without a
+    // network round trip.
     expect(
-      await page.evaluate(() => {
+      await page.evaluate(async () => {
         document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
-        return document.querySelector("#settled-target-content")?.textContent ?? null;
+        const inClickTask = document.querySelector("#settled-target-content")?.textContent ?? null;
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        return {
+          afterNextFrame: document.querySelector("#settled-target-content")?.textContent ?? null,
+          inClickTask,
+        };
       }),
-    ).toBe("Settled prefetch page content");
+    ).toEqual({ afterNextFrame: "Settled prefetch page content", inClickTask: null });
+    expect(settledTargetRequestsAfterClick).toBe(0);
 
     await page.goto(baseUrl);
     await waitForAppRouterHydration(page);
