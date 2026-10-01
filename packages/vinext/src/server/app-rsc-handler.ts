@@ -1900,11 +1900,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     if (HAS_CONFIG_REWRITES && options.configRewrites.beforeFiles.length) {
       const { matchRewrite } = await import("../config/config-matchers.js");
-      // The source request shares the target's headers, cookies, host and
-      // query; source middleware may only add headers, which the live headers
-      // context already carries.
+      // The source request shares the target's cookies and query. Rebuild
+      // the rest from the live headers context, which now also carries any
+      // header source middleware added, such as a `Host` the target lacked.
       const sourceRewriteContext = requestContextForResolvedUrl(
-        postMiddlewareRequestContext,
+        buildPostMwRequestContext(userlandRequest),
         resolvedUrl,
         url,
       );

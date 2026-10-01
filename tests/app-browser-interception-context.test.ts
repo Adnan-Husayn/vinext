@@ -121,9 +121,28 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
   });
 
   // The matched pathname is decoded, while the server matches the context on
-  // its raw segments, so a decoded value would name a different source.
-  it.each(["/interception-mw/café", "/interception-mw/100%", "/interception-mw/%61"])(
-    "does not send the decoded matched pathname %s as context",
+  // its raw segments, so it is sent encoded the way the URL parser encodes it.
+  it("encodes a decoded matched pathname that only matches after the rewrite", () => {
+    const tagPhotoInterception: RouteManifestInterception = {
+      ...localePhotoInterception,
+      id: "interception:slot:modal:/interception-mw/:locale/tags/:tag->/interception-mw/:locale/:username/p/:id",
+      sourcePattern: "/interception-mw/:locale/tags/:tag",
+      sourcePatternParts: ["interception-mw", ":locale", "tags", ":tag"],
+    };
+
+    expect(
+      resolveMiddlewareRewriteNavigationInterceptionContext({
+        basePath: "",
+        currentMatchedPathname: "/interception-mw/en/tags/café",
+        currentPathname: "/interception-mw/tags/caf%C3%A9",
+        routeManifest: createRouteManifest([tagPhotoInterception]),
+        targetPathname: "/interception-mw/foo/p/1",
+      }),
+    ).toBe("/interception-mw/en/tags/caf%C3%A9");
+  });
+
+  it.each(["/interception-mw/100%", "/interception-mw/%61", "/interception-mw/a%2Fb"])(
+    "does not send the decoded matched pathname %s, which cannot be re-encoded reliably",
     (currentMatchedPathname) => {
       expect(
         resolveMiddlewareRewriteNavigationInterceptionContext({

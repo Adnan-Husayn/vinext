@@ -4155,6 +4155,65 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  // A direct request rebuilds its rewrite context after middleware, so a
+  // `Host` that middleware adds selects host-conditioned beforeFiles rules.
+  it("applies source beforeFiles rules to a host that source middleware adds", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const deniedRoute = createPageRoute({ pattern: "/denied", routeSegments: ["denied"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [
+          {
+            source: "/feed/secret",
+            destination: "/denied",
+            has: [{ type: "host", value: "other.test" }],
+          },
+        ],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed/secret") return { params: {}, route: sourceRoute };
+        if (pathname === "/denied") return { params: {}, route: deniedRoute };
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          if (request.nextUrl.pathname !== "/feed/secret") {
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          }
+          const headers = new Headers(request.headers);
+          headers.set("host", "other.test");
+          return new Response(null, {
+            headers: {
+              "x-middleware-next": "1",
+              "x-middleware-override-headers": [...headers.keys()].join(","),
+              ...Object.fromEntries(
+                [...headers].map(([name, value]) => [`x-middleware-request-${name}`, value]),
+              ),
+            },
+          });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
   it("authorizes a source on the target's route with different params", async () => {
     const feedRoute = createPageRoute({
       isDynamic: true,

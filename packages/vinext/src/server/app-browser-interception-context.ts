@@ -74,10 +74,9 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
     if (
       currentMatchedPathname !== null &&
       matchedSourceParts !== null &&
-      isRawSafeMatchedPathname(currentMatchedPathname) &&
       matchRoutePatternPrefix(matchedSourceParts, interception.sourcePatternParts)
     ) {
-      return currentMatchedPathname;
+      return encodeMatchedPathname(currentMatchedPathname);
     }
   }
 
@@ -86,14 +85,18 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
 
 /**
  * The matched route pathname is decoded, but the server matches the context
- * on its raw segments. Only a pathname that reads the same either way can
- * stand in for the URL; otherwise navigate without interception.
+ * on its raw segments, so send it encoded as the URL parser encodes it (`café`
+ * becomes `caf%C3%A9`). A decoded `%` cannot be re-encoded reliably, since
+ * encoded path delimiters stay escaped while literal percent signs do not, and
+ * a backslash or dot segment would change the path's structure, so navigate
+ * without interception for those instead.
  */
-function isRawSafeMatchedPathname(pathname: string): boolean {
-  if (pathname.includes("%")) return false;
+function encodeMatchedPathname(pathname: string): string | null {
+  if (pathname.includes("%") || pathname.includes("\\")) return null;
+  if (pathname.split("/").some((segment) => segment === "." || segment === "..")) return null;
   try {
-    return new URL(pathname, "http://n").pathname === pathname;
+    return new URL(pathname, "http://n").pathname;
   } catch {
-    return false;
+    return null;
   }
 }

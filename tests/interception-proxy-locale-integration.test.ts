@@ -113,6 +113,8 @@ describe.each([
     // Dynamic params stay encoded as in the URL, as in Next.js. The proof
     // names the matched pathname decoded once, like the client's route id.
     ["an unprefixed encoded dynamic source", "/tags/caf%C3%A9", "tag", "/en/tags/café"],
+    // What the client sends from its re-encoded matched pathname.
+    ["a prefixed encoded dynamic source", "/en/tags/caf%C3%A9", "tag", "/en/tags/café"],
     ["an unprefixed encoded-slash dynamic source", "/tags/a%2Fb", "tag", "/en/tags/a%2Fb"],
     ["an unprefixed encoded-percent dynamic source", "/tags/%2561", "tag", "/en/tags/%61"],
     ["an unprefixed double-encoded dynamic source", "/tags/%252561", "tag", "/en/tags/%2561"],
@@ -133,7 +135,7 @@ describe.each([
       expect(body).toContain(`"sourceMatchedUrl":"${sourceMatchedUrl}"`);
       if (sourcePage === "tag") {
         // The source renders with the params a direct request to it gets.
-        expect(body).toContain(`tag=${source.slice("/tags/".length)};`);
+        expect(body).toContain(`tag=${source.slice(source.lastIndexOf("/") + 1)};`);
       }
     },
     30_000,
