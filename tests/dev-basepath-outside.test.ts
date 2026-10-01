@@ -177,6 +177,21 @@ describe.each(FIXTURES)("dev basePath boundary ($name)", ({ dir, appRouter }) =>
       expect(outside.headers.get("x-mw"), pathname).toBe(`(none)|${pathname}`);
     }
   });
+
+  // Matches next@16.2.7: a middleware rewrite claims a request outside basePath.
+  it("serves a middleware rewrite from outside the basePath", async () => {
+    const res = await fetch(`${baseUrl}/mw-rewrite-outside`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Hello World");
+  });
+
+  // Matches next@16.2.7: the trailing-slash redirect outside basePath keeps
+  // the request outside it.
+  it("redirects trailing slashes outside the basePath without adding it", async () => {
+    const res = await fetch(`${baseUrl}/hello/`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(new URL(res.headers.get("location") ?? "", baseUrl).pathname).toBe("/hello");
+  });
 });
 
 // Connect strips a mount prefix from req.url and keeps the full URL in
@@ -204,7 +219,9 @@ describe("dev basePath boundary mounted in middleware mode (Pages Router)", () =
           name: "test-post-middleware",
           configureServer(viteServer) {
             return () => {
-              viteServer.middlewares.use((_req, res, next) => {
+              // Named like Vite's own middlewares, which vinext must not
+              // mistake it for.
+              viteServer.middlewares.use(function viteAuditMiddleware(_req, res, next) {
                 res.setHeader("x-plugin-post", "1");
                 next();
               });

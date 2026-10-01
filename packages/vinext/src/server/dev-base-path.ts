@@ -1,6 +1,18 @@
 import type { Connect, ViteDevServer } from "vite";
 import { hasBasePath } from "../utils/base-path.js";
 
+/** Vite's internal middlewares that follow its base middleware. */
+const VITE_MIDDLEWARES_AFTER_BASE = new Set([
+  "viteHMRPingMiddleware",
+  "viteServePublicMiddleware",
+  "viteTransformMiddleware",
+  "viteServeRawFsMiddleware",
+  "viteServeStaticMiddleware",
+  "viteTriggerLazyBundlingMiddleware",
+  "viteMemoryFilesMiddleware",
+  "viteHtmlFallbackMiddleware",
+]);
+
 function pathnameOf(url: string): string {
   const end = url.search(/[?#]/);
   return end === -1 ? url : url.slice(0, end);
@@ -50,15 +62,14 @@ export function patchViteBaseMiddleware(server: ViteDevServer, basePath: string)
     return viteBaseMiddleware(req, res, next);
   } satisfies Connect.NextHandleFunction;
 
-  // Vite names every internal middleware `vite…`, except the editor launcher
-  // it mounts at /__open-in-editor.
-  const viteEntries = stack
-    .slice(baseIndex + 1)
-    .filter(
-      ({ handle, route }) =>
-        route === "/__open-in-editor" ||
-        (typeof handle === "function" && /^vite[A-Z]/.test(handle.name)),
-    );
+  // Vite registers its own middlewares as one run right after the base
+  // middleware, before any plugin's post hook.
+  const viteEntries: typeof stack = [];
+  for (const entry of stack.slice(baseIndex + 1)) {
+    const name = typeof entry.handle === "function" ? entry.handle.name : "";
+    if (entry.route !== "/__open-in-editor" && !VITE_MIDDLEWARES_AFTER_BASE.has(name)) break;
+    viteEntries.push(entry);
+  }
 
   return () => {
     for (const entry of viteEntries) {

@@ -395,7 +395,7 @@ export async function runPagesRequest(
   {
     const trailingSlashRedirect = isDataReq
       ? null
-      : normalizeTrailingSlash(pathname, basePath, trailingSlash, search);
+      : normalizeTrailingSlash(pathname, hadBasePath ? basePath : "", trailingSlash, search);
     if (trailingSlashRedirect) {
       return { type: "response", response: trailingSlashRedirect };
     }
@@ -447,6 +447,7 @@ export async function runPagesRequest(
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
+  let middlewareRewriteFired = false;
   const middlewareHeaders: HeaderRecord = {};
   const mergeConfigHeadersIntoEarlyResponse = (response: Response): Response => {
     if (configHeaders.length === 0) return response;
@@ -580,6 +581,7 @@ export async function runPagesRequest(
     if (result.rewriteUrl) {
       resolvedUrl = result.rewriteUrl;
       resolvedPathnameIsRequestPathname = false;
+      middlewareRewriteFired = true;
     }
 
     // Reconciled superset: result.status takes priority over result.rewriteStatus
@@ -715,7 +717,8 @@ export async function runPagesRequest(
 
   const isMissingBuildAsset = () =>
     isNextStaticPath(resolvedPathname, "", assetPrefixPathname(deps.assetPrefix ?? ""));
-  const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
+  const isOutsideBasePathUnclaimed = () =>
+    basePath && !hadBasePath && !configRewriteFired && !middlewareRewriteFired;
   // Like any other response, the 404 carries middleware headers and the
   // `basePath: false` config headers staged for this request.
   const outOfBasePathNotFound = (): PagesPipelineResult => ({

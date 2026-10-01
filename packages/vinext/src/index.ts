@@ -6515,7 +6515,7 @@ export const loadServerActionClient = ${
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 const trailingSlashRedirect = normalizeTrailingSlash(
                   routeUrl.split("?")[0],
-                  bp,
+                  req.__vinextOutsideBasePath ? "" : bp,
                   nextConfig.trailingSlash,
                   qs,
                 );

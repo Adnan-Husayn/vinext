@@ -1424,6 +1424,40 @@ describe("out-of-basePath rejection", () => {
     expect(result.response.headers.get("x-inside")).toBeNull();
   });
 
+  it("allows requests outside basePath when middleware rewrites them", async () => {
+    const renderPage = makeRenderPage(200);
+    const result = await runPagesRequest(
+      makeRequest("/outside"),
+      baseDeps({
+        basePath: "/base",
+        hadBasePath: false,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/inside" }),
+        renderPage,
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/inside",
+      undefined,
+      expect.any(Headers),
+    );
+  });
+
+  it("redirects trailing slashes outside basePath without adding it", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/outside/"),
+      baseDeps({ basePath: "/base", hadBasePath: false }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(308);
+    expect(result.response.headers.get("location")).toBe("/outside");
+  });
+
   it("allows requests outside basePath when beforeFiles rewrite fires", async () => {
     const renderPage = makeRenderPage(200);
     const req = makeRequest("/outside");
