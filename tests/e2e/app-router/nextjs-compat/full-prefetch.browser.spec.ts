@@ -362,6 +362,30 @@ test("a settled prepared prefetch commits after the initiating click's frame", a
     expect(`${urlAfterHashRoundTrip.pathname}${urlAfterHashRoundTrip.hash}`).toBe("/#start");
     await expect(page.locator("#settled-target-content")).toHaveCount(0);
 
+    // A raw pushState adds a history entry even when a replaceState restores
+    // the starting URL, so it also supersedes the prepared commit.
+    const rawHistoryFullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/settled-target" &&
+        url.searchParams.has("_rsc") &&
+        response.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await (await rawHistoryFullResponse).finished();
+    await page.waitForTimeout(50);
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
+      window.history.pushState(null, "", "#later");
+      window.history.replaceState(null, "", "/");
+    });
+    await page.waitForTimeout(250);
+    const urlAfterRawHistoryWrites = new URL(page.url());
+    expect(`${urlAfterRawHistoryWrites.pathname}${urlAfterRawHistoryWrites.hash}`).toBe("/");
+    await expect(page.locator("#settled-target-content")).toHaveCount(0);
+
     await page.goto(baseUrl);
     await waitForAppRouterHydration(page);
     expect(

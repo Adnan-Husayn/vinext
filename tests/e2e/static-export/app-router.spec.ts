@@ -201,6 +201,30 @@ test.describe("Static Export — App Router", () => {
     );
   });
 
+  test("a settled prefetch does not commit over a hash navigation from the same task", async ({
+    page,
+  }) => {
+    const aboutPrefetch = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/about/index.txt",
+    );
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await (await aboutPrefetch).finished();
+    // Preparation is CPU-local once the prefetched Flight body settles.
+    await page.waitForTimeout(50);
+
+    // Static export awaits the decoded payload before the paint yield, so the
+    // hash navigation lands while the prefetched navigation is suspended.
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>('a[href="/about/"]')?.click();
+      window.location.hash = "later";
+    });
+    await page.waitForTimeout(250);
+    const url = new URL(page.url());
+    expect(`${url.pathname}${url.hash}`).toBe("/#later");
+    await expect(page.locator("h1")).toHaveText("Static Export — App Router");
+  });
+
   test("missing Flight artifacts fall back to the static 404 document", async ({ page }) => {
     const documentPaths: string[] = [];
     const flightPaths: string[] = [];

@@ -423,10 +423,10 @@ let latestRscHmrUpdateId = 0;
 // navigation. This is intentionally not a per-navigation set — a future
 // asynchronous scroll restore for an older navId is already stale.
 let synchronousPopstateScrollRestoreNavigationId: number | null = null;
-// Advanced by every same-document URL commit (hash-only navigations and
-// same-route traversals). Those return before beginNavigation(), so this is
-// how an awaiting navigation detects newer intent that left the URL unchanged
-// on net (for example #a -> #b -> #a).
+// Advanced by every same-document URL commit (hash-only navigations,
+// same-route traversals and raw history.pushState calls). Those never call
+// beginNavigation(), so this is how an awaiting navigation detects newer intent
+// that left the URL unchanged on net (for example #a -> #b -> #a).
 let sameDocumentNavigationCount = 0;
 
 // Vite can notify the browser about an RSC HMR update before the dev server's
@@ -2107,6 +2107,11 @@ function bootstrapHydration(
       const mountedSlotsHeader = getMountedSlotIdsHeader(navigationInitiationState.elements);
 
       while (true) {
+        // Snapshot before any await in this attempt (static export awaits the
+        // decoded payload) so the paint yield below also sees same-document
+        // navigations made later in the initiating task.
+        const hrefAtAttemptStart = window.location.href;
+        const sameDocumentNavigationCountAtAttemptStart = sameDocumentNavigationCount;
         const url = new URL(currentHref, window.location.origin);
         const requestState = getRequestState(
           navigationKind,
@@ -2746,16 +2751,14 @@ function bootstrapHydration(
             visibleCommitMode,
           })
         ) {
-          const hrefBeforePaintYield = window.location.href;
-          const sameDocumentNavigationCountBeforePaintYield = sameDocumentNavigationCount;
           await waitForNextPaint();
           // A hash-only navigation updates the URL without starting an RSC
           // navigation, so the id check below cannot see it. Any same-document
-          // navigation or URL change during the frame is newer intent than
-          // this commit.
+          // navigation or URL change since this attempt started is newer
+          // intent than this commit.
           if (
-            sameDocumentNavigationCount !== sameDocumentNavigationCountBeforePaintYield ||
-            window.location.href !== hrefBeforePaintYield
+            sameDocumentNavigationCount !== sameDocumentNavigationCountAtAttemptStart ||
+            window.location.href !== hrefAtAttemptStart
           ) {
             return;
           }
@@ -2981,10 +2984,17 @@ function bootstrapHydration(
     navigate: navigateRsc,
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
-    claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) =>
-      historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
-    commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
-      historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
+    // Only raw History API writes reach these two. A push adds an entry even
+    // when a later replace restores the URL, so it counts as a same-document
+    // navigation; a replace that changes the URL is caught by the URL check.
+    claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) => {
+      if (historyUpdateMode === "push") sameDocumentNavigationCount += 1;
+      historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState);
+    },
+    commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) => {
+      if (historyUpdateMode === "push") sameDocumentNavigationCount += 1;
+      historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState);
+    },
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).
