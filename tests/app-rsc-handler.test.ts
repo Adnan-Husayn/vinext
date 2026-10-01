@@ -5146,7 +5146,68 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(200);
     expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/en/feed" }),
+    );
     expect(interceptSources).toContain("/en/feed");
+  });
+
+  it("hands a Server Action the interception source its locale rewrite reaches", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const feedRoute = createPageRoute({
+      pattern: "/:locale/feed",
+      routeSegments: ["[locale]", "feed"],
+    });
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        if (sourcePathname === "/feed") {
+          return { route: localeRootRoute, params: { locale: "feed" } };
+        }
+        if (sourcePathname === "/en/feed") {
+          return { route: feedRoute, params: { locale: "en" } };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/feed") {
+          return {
+            params: { locale: "en" } as Record<string, string | string[]>,
+            route: feedRoute,
+          };
+        }
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/en/feed" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    headers.set("next-action", "interception-action");
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, { headers, method: "POST" }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("action");
+    expect(handleServerActionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ actionId: "interception-action", interceptionContext: "/en/feed" }),
+    );
   });
 
   it("re-resolves a rewritten interception source with a __proto__ param", async () => {
