@@ -23,14 +23,21 @@ export function shouldYieldBeforePreparedPrefetchCommit(options: {
   );
 }
 
+// Cap on the wait for a frame. Offscreen or display:none cross-origin iframes
+// stay "visible" but Chromium stops running their animation frames, so an
+// embedded app's navigation must not depend on one arriving.
+const PAINT_YIELD_TIMEOUT_MS = 100;
+
 /**
  * Resolves once the browser has had the chance to present the frame for the
  * triggering input. requestAnimationFrame runs just before that frame's paint;
- * the posted message runs as a task after it. A message is used instead of
- * setTimeout so the yield also completes under fake or frozen timers.
+ * the posted message runs as a task after it. The frame path uses a message
+ * instead of setTimeout so the yield also completes under fake or frozen
+ * timers.
  *
- * Hidden documents don't produce frames, so the yield is skipped up front and
- * abandoned if the document is hidden while waiting.
+ * The yield never holds a navigation for long: it is skipped when the document
+ * is hidden, abandoned if the document is hidden while waiting, and bounded by
+ * a short timer for documents that are visible but not producing frames.
  */
 export function waitForNextPaint(): Promise<void> {
   if (
@@ -44,11 +51,13 @@ export function waitForNextPaint(): Promise<void> {
   return new Promise((resolve) => {
     const channel = new MessageChannel();
     const finish = () => {
+      clearTimeout(timer);
       document.removeEventListener("visibilitychange", finish);
       channel.port1.onmessage = null;
       channel.port1.close();
       resolve();
     };
+    const timer = setTimeout(finish, PAINT_YIELD_TIMEOUT_MS);
     channel.port1.onmessage = finish;
     document.addEventListener("visibilitychange", finish);
     requestAnimationFrame(() => channel.port2.postMessage(null));

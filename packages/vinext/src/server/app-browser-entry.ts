@@ -2731,7 +2731,9 @@ function bootstrapHydration(
         }
 
         // Let the frame for the triggering input paint before the synchronous
-        // commit below renders the whole destination route.
+        // commit below renders the whole destination route. The prefetch was
+        // already consumed, so a navigation superseded during this frame drops
+        // it and a later visit to the URL fetches again.
         if (
           shouldYieldBeforePreparedPrefetchCommit({
             hasPreparedElements: prefetchedElements !== undefined,

@@ -138,17 +138,43 @@ describe("waitForNextPaint", () => {
     await promise;
   });
 
-  it("does not depend on setTimeout, so frozen test timers cannot stall navigation", async () => {
+  it("completes through the frame even when test timers never fire", async () => {
     stubDocument("visible");
     const frames = stubAnimationFrames();
-    const setTimeoutSpy = vi.fn();
+    const setTimeoutSpy = vi.fn(() => 1);
+    const clearTimeoutSpy = vi.fn();
     vi.stubGlobal("setTimeout", setTimeoutSpy);
+    vi.stubGlobal("clearTimeout", clearTimeoutSpy);
 
     const wait = waitForNextPaint();
     frames.flush();
     await wait;
 
-    expect(setTimeoutSpy).not.toHaveBeenCalled();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("stops waiting when a visible document produces no frame", async () => {
+    stubDocument("visible");
+    const frames = stubAnimationFrames();
+    let fireTimeout: (() => void) | undefined;
+    const setTimeoutSpy = vi.fn((callback: () => void) => {
+      fireTimeout = callback;
+      return 1;
+    });
+    vi.stubGlobal("setTimeout", setTimeoutSpy);
+    vi.stubGlobal("clearTimeout", vi.fn());
+
+    const wait = track(waitForNextPaint());
+    await nextMacrotask();
+    expect(wait.settled()).toBe(false);
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 100);
+
+    // Offscreen cross-origin iframes stay "visible" but get no frames.
+    fireTimeout?.();
+    await flushMicrotasks();
+
+    expect(wait.settled()).toBe(true);
+    expect(frames.pending()).toBe(1);
   });
 
   it("stops waiting when the document is hidden before the frame arrives", async () => {
