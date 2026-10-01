@@ -4169,7 +4169,7 @@ describe("createAppRscHandler", () => {
           {
             source: "/feed/secret",
             destination: "/denied",
-            has: [{ type: "host", value: "other.test" }],
+            has: [{ type: "host", key: "host", value: "other\\.test" }],
           },
         ],
         afterFiles: [],
