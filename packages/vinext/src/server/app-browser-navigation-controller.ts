@@ -732,7 +732,16 @@ export function createAppBrowserNavigationController(
     }
 
     options.beforeCommit?.();
-    dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    // Like a navigation render, the restored tree must read its own params and
+    // URL from the render snapshot: client params stay staged until the
+    // caller's commitClientNavigationState(), which releases this snapshot.
+    activateNavigationSnapshot();
+    try {
+      dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    } catch (error) {
+      commitClientNavigationStateImpl(undefined, { releaseSnapshot: true });
+      throw error;
+    }
     return true;
   }
 
