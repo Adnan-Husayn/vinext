@@ -42,6 +42,7 @@ const PAINT_YIELD_TIMEOUT_MS = 100;
 export function waitForNextPaint(): Promise<void> {
   if (
     typeof requestAnimationFrame !== "function" ||
+    typeof cancelAnimationFrame !== "function" ||
     typeof MessageChannel !== "function" ||
     document.visibilityState === "hidden"
   ) {
@@ -52,14 +53,18 @@ export function waitForNextPaint(): Promise<void> {
     const channel = new MessageChannel();
     const finish = () => {
       clearTimeout(timer);
+      // A frame-suppressed document may never run this callback; cancel it so
+      // the fallbacks release the closure and channel.
+      cancelAnimationFrame(frame);
       document.removeEventListener("visibilitychange", finish);
       channel.port1.onmessage = null;
       channel.port1.close();
+      channel.port2.close();
       resolve();
     };
     const timer = setTimeout(finish, PAINT_YIELD_TIMEOUT_MS);
     channel.port1.onmessage = finish;
     document.addEventListener("visibilitychange", finish);
-    requestAnimationFrame(() => channel.port2.postMessage(null));
+    const frame = requestAnimationFrame(() => channel.port2.postMessage(null));
   });
 }

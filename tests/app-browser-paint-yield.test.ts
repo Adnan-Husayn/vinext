@@ -13,18 +13,23 @@ function stubDocument(visibilityState: DocumentVisibilityState): TestDocument {
 }
 
 function stubAnimationFrames(): { flush: () => void; pending: () => number } {
-  let callbacks: FrameRequestCallback[] = [];
+  let callbacks = new Map<number, FrameRequestCallback>();
+  let nextHandle = 1;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-    callbacks.push(callback);
-    return callbacks.length;
+    const handle = nextHandle++;
+    callbacks.set(handle, callback);
+    return handle;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (handle: number) => {
+    callbacks.delete(handle);
   });
   return {
     flush() {
       const queued = callbacks;
-      callbacks = [];
-      for (const callback of queued) callback(0);
+      callbacks = new Map();
+      for (const callback of queued.values()) callback(0);
     },
-    pending: () => callbacks.length,
+    pending: () => callbacks.size,
   };
 }
 
@@ -174,12 +179,13 @@ describe("waitForNextPaint", () => {
     await flushMicrotasks();
 
     expect(wait.settled()).toBe(true);
-    expect(frames.pending()).toBe(1);
+    // The queued frame is cancelled so it does not outlive the wait.
+    expect(frames.pending()).toBe(0);
   });
 
   it("stops waiting when the document is hidden before the frame arrives", async () => {
     const doc = stubDocument("visible");
-    stubAnimationFrames();
+    const frames = stubAnimationFrames();
 
     const wait = track(waitForNextPaint());
     await nextMacrotask();
@@ -190,5 +196,6 @@ describe("waitForNextPaint", () => {
     await flushMicrotasks();
 
     expect(wait.settled()).toBe(true);
+    expect(frames.pending()).toBe(0);
   });
 });
