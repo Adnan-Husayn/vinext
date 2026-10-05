@@ -137,6 +137,8 @@ type PublicationResult = {
   published: boolean;
 };
 
+type EdgeCacheOperation = "purge" | "invalidate";
+
 class R2PublicationError extends Error {
   constructor(cause: unknown) {
     super("R2 response publication failed", { cause });
@@ -526,14 +528,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return { cacheKey, keyHash };
   }
 
-  private async purgeEdgeCache(options: CachePurgeOptions): Promise<boolean> {
+  /**
+   * `purge` deletes matching edge responses. `invalidate` marks them stale so
+   * Workers Cache keeps serving them while it refetches from this binding in
+   * the background.
+   */
+  private async updateEdgeCache(
+    options: CachePurgeOptions,
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     if (this.env.WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE === "disabled") {
       return false;
     }
-    if (!this.ctx.cache) {
+    const cache = this.ctx.cache;
+    if (!cache) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge is unavailable",
+          message: `Workers Response Store cache ${operation} is unavailable`,
           reason: "ctx.cache is absent",
         }),
       );
@@ -541,18 +552,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     try {
-      const result = await this.ctx.cache.purge(options);
+      // Local Miniflare does not implement invalidate() yet, so fall back to a
+      // hard purge there.
+      const result =
+        operation === "invalidate" && typeof cache.invalidate === "function"
+          ? await cache.invalidate(options)
+          : await cache.purge(options);
       if (!result.success) {
         throw new Error(
           result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ") ||
-            "Workers Response Store cache purge was rejected",
+            `Workers Response Store cache ${operation} was rejected`,
         );
       }
       return true;
     } catch (error) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge failed",
+          message: `Workers Response Store cache ${operation} failed`,
           error: error instanceof Error ? error.message : String(error),
         }),
       );
@@ -560,11 +576,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
   }
 
-  private async purgeEdgeCacheByTags(tags: string[]): Promise<boolean> {
+  private async updateEdgeCacheByTags(
+    tags: string[],
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     let accepted = true;
 
     for (const batch of batches(tags, CACHE_PURGE_BATCH_SIZE)) {
-      if (!(await this.purgeEdgeCache({ tags: batch }))) {
+      if (!(await this.updateEdgeCache({ tags: batch }, operation))) {
         accepted = false;
       }
     }
@@ -573,7 +592,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean> {
-    return await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
+    return await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry));
   }
 
   private async purgePendingEdgeEntries(
@@ -586,7 +605,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         tombstoneSequence,
       );
       if (!entries.length) return true;
-      if (!(await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
+      if (!(await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
         return false;
       }
       await metadata.markTombstonesEdgePurged(entries);
@@ -1000,7 +1019,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
         if (reconciliation.purged.length) {
           try {
-            if (await this.purgeEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
+            if (await this.updateEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
               await metadata.markTombstonesEdgePurged(reconciliation.purged);
             }
           } catch (reconciliationError) {
@@ -1298,7 +1317,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             backingStoreUpdated: true,
             edgePurgeAccepted:
               options.purgeExisting && result.edgePurgeRequired
-                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
                 : true,
           };
         }
@@ -1330,7 +1349,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         backingStoreUpdated: true,
         edgePurgeAccepted:
           options.purgeExisting && result.edgePurgeRequired
-            ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
             : true,
       };
     } finally {
@@ -1405,8 +1424,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
     }
 
+    // Refresh is stale-while-revalidate: R2 already holds the new revisions,
+    // so let Workers Cache keep serving the prior responses while it refills.
     const edgePurgeAccepted = refreshed.length
-      ? await this.purgeEdgeCacheByTags(refreshed.map((entry) => purgeTagForEntry(entry)))
+      ? await this.updateEdgeCacheByTags(
+          refreshed.map((entry) => purgeTagForEntry(entry)),
+          "invalidate",
+        )
       : false;
 
     if (failures.length) {
@@ -1458,7 +1482,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     if (options.purgeEverything && failures.length === 0) {
       try {
-        edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
+        edgePurgeAccepted = await this.updateEdgeCache({ purgeEverything: true });
         if (edgePurgeAccepted) {
           const acknowledged = await Promise.allSettled(
             reservations.map(({ metadata, reservation }) =>
