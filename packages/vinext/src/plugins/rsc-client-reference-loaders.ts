@@ -114,16 +114,21 @@ export function createRscClientReferenceLoadersPlugin(
           | RscPluginWithApi
           | undefined
       )?.api;
+    },
+    outputOptions(output) {
+      // Rolldown resolves output options before the build starts, so this sees
+      // the final client output, including chunk groups that other plugins add
+      // in their own config or outputOptions hooks, before any group is planned.
+      if (this.environment?.name !== "client") return;
       groupingEnabled =
-        !!grouping &&
-        !hasUserClientChunkGroups(config.environments.client?.build, grouping.ownClientChunkGroups);
+        !!grouping && !hasUserClientChunkGroups(output, grouping.ownClientChunkGroups);
     },
     buildStart() {
       if (this.environment.name === "rsc") routeSignatures = new Map();
       if (this.environment.name === "client") groupModules.clear();
     },
     buildEnd(error) {
-      if (error || !grouping || !groupingEnabled) return;
+      if (error || !grouping) return;
       if (this.environment.name !== "rsc" || this.environment.mode !== "build") return;
       const manager = rscApi?.manager;
       const routes = grouping.getRoutes();

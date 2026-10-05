@@ -280,38 +280,18 @@ describe("hasUserClientChunkGroups", () => {
   it("ignores vinext's own groups and code splitting options without groups", () => {
     expect(hasUserClientChunkGroups(undefined, own)).toBe(false);
     expect(
-      hasUserClientChunkGroups(
-        { rolldownOptions: { output: { codeSplitting: { minSize: 10_000, groups: [ownGroup] } } } },
-        own,
-      ),
+      hasUserClientChunkGroups({ codeSplitting: { minSize: 10_000, groups: [ownGroup] } }, own),
     ).toBe(false);
-    expect(
-      hasUserClientChunkGroups({ rolldownOptions: { output: { codeSplitting: true } } }, own),
-    ).toBe(false);
+    expect(hasUserClientChunkGroups({ codeSplitting: true }, own)).toBe(false);
   });
 
   it("detects any other chunk group or manualChunks", () => {
     expect(
-      hasUserClientChunkGroups(
-        {
-          rolldownOptions: {
-            output: { codeSplitting: { groups: [ownGroup, { name: "vendor" }] } },
-          },
-        },
-        own,
-      ),
+      hasUserClientChunkGroups({ codeSplitting: { groups: [ownGroup, { name: "vendor" }] } }, own),
     ).toBe(true);
-    expect(
-      hasUserClientChunkGroups(
-        { rolldownOptions: { output: [{ manualChunks: () => undefined }] } },
-        own,
-      ),
-    ).toBe(true);
-    expect(
-      hasUserClientChunkGroups(
-        { rollupOptions: { output: { advancedChunks: { groups: [{ name: "x" }] } } } },
-        own,
-      ),
-    ).toBe(true);
+    expect(hasUserClientChunkGroups([{ manualChunks: () => undefined }], own)).toBe(true);
+    expect(hasUserClientChunkGroups({ advancedChunks: { groups: [{ name: "x" }] } }, own)).toBe(
+      true,
+    );
   });
 });

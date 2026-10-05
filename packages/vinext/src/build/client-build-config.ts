@@ -390,7 +390,7 @@ function hasChunkGroups(output: unknown, ownGroups: ReadonlySet<unknown>): boole
 }
 
 /**
- * Whether the resolved client build has chunk groups (`codeSplitting.groups`,
+ * Whether client output options have chunk groups (`codeSplitting.groups`,
  * `advancedChunks.groups` or `manualChunks`) other than vinext's own
  * `ownGroups`, whether they came from the user or another plugin. vinext's
  * client-reference route grouping is disabled in that case: a manual group can
@@ -398,13 +398,10 @@ function hasChunkGroups(output: unknown, ownGroups: ReadonlySet<unknown>): boole
  * seen to evaluate modules out of order and break hydration.
  */
 export function hasUserClientChunkGroups(
-  build: Pick<UserConfig["build"] & {}, "rolldownOptions" | "rollupOptions"> | undefined,
+  output: unknown,
   ownGroups: ReadonlySet<unknown>,
 ): boolean {
-  if (!build) return false;
-  return [build.rolldownOptions?.output, build.rollupOptions?.output].some((output) =>
-    Array.isArray(output)
-      ? output.some((entry) => hasChunkGroups(entry, ownGroups))
-      : hasChunkGroups(output, ownGroups),
-  );
+  return Array.isArray(output)
+    ? output.some((entry) => hasChunkGroups(entry, ownGroups))
+    : hasChunkGroups(output, ownGroups);
 }
