@@ -11,6 +11,8 @@ import {
 } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vitest";
 
+import { encodeCloudflareCacheTag } from "../src/cache/cdn-adapter.runtime.js";
+
 const root = path.resolve(import.meta.dirname, "../../..");
 const appOutput = path.join(root, "examples/response-store-demo/dist/server");
 const selfContainedAppOutput = path.join(
@@ -73,6 +75,7 @@ async function metadataEntries(): Promise<unknown[][]> {
 
 type StoredResponseEntry = {
   activeRevision?: unknown;
+  cacheTags?: unknown;
   freshUntil?: unknown;
   objectKey?: unknown;
   responseHeaders?: unknown;
@@ -1134,6 +1137,46 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.notEqual(recomputed[1], first[1]);
     assert.match(recomputed[0], /^first:unreplayable:/);
     assert.match(recomputed[1], /^second:unreplayable:/);
+  }, 15_000);
+
+  test("stores the other values a page replay recomputes", async () => {
+    const pathname = "/use-cache-unreplayable";
+    await cacheStatus(pathname);
+    const replayEntries = async () =>
+      ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+        (entry) =>
+          entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
+      );
+    // Only the first value carries the tag, which the adapter stores encoded.
+    const firstTag = encodeCloudflareCacheTag("unreplayable-first");
+    const isFirst = (entry: StoredResponseEntry) =>
+      Array.isArray(entry.cacheTags) && entry.cacheTags.includes(firstTag);
+    const secondRevision = async () => {
+      const second = (await replayEntries()).filter((entry) => !isFirst(entry));
+      assert.equal(second.length, 1);
+      return second[0].activeRevision;
+    };
+    for (let attempt = 0; attempt < 50 && (await replayEntries()).length < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal((await replayEntries()).filter(isFirst).length, 1);
+    const before = await secondRevision();
+    assert.equal(typeof before, "number");
+
+    // Once both values expire, refreshing the first replays the page, which recomputes
+    // the second. That value is stored too, as Next.js stores every entry a revalidation
+    // recomputes, instead of being recomputed again by the next request.
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    const refresh = await request("/api/revalidate-tag", {
+      body: JSON.stringify({ tag: "unreplayable-first" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(refresh.status, 200, await refresh.text());
+    for (let attempt = 0; attempt < 40 && (await secondRevision()) === before; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(Number(await secondRevision()) > Number(before));
   }, 15_000);
 
   test("never serves a hard-expired use-cache value", async () => {
