@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "pathslash";
 import type { Rollup } from "vite";
 import { actionOwnerInterceptEntryIds, actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
 
@@ -34,7 +35,9 @@ function routeOwners(route: ClientReferenceGroupRoute): [owner: string, roots: s
   return [
     [route.pattern, routeRoots],
     ...intercepts.map((intercept): [string, string[]] => [
-      `intercept:${intercept.pagePath}`,
+      // Intercepts of the same navigation render together, so they share an
+      // owner. Owner ids stay free of absolute paths to keep group ids stable.
+      `intercept:${intercept.sourceMatchPattern}->${intercept.targetPattern}`,
       actionOwnerInterceptEntryIds(intercept),
     ]),
   ];
@@ -137,7 +140,9 @@ export function collectClientReferenceRouteSignatures(options: {
   for (const route of options.routes) {
     for (const [owner, roots] of routeOwners(route)) addOwner(owner, roots);
   }
-  for (const root of options.sharedRoots ?? []) addOwner(`shared:${root}`, [root]);
+  for (const root of options.sharedRoots ?? []) {
+    addOwner(`shared:${path.basename(root, path.extname(root))}`, [root]);
+  }
 
   const signatures = new Map<string, string>();
   for (const [reference, referenceOwners] of owners) {

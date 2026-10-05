@@ -101,9 +101,9 @@ describe("collectClientReferenceRouteSignatures", () => {
     });
 
     expect(Object.fromEntries(signatures)).toEqual({
-      "/nav.tsx": "/\nshared:/app/global-error.tsx",
-      "/retry.tsx": "shared:/app/global-error.tsx",
-      "/search.tsx": "shared:/app/global-not-found.tsx",
+      "/nav.tsx": "/\nshared:global-error",
+      "/retry.tsx": "shared:global-error",
+      "/search.tsx": "shared:global-not-found",
     });
   });
 
@@ -131,7 +131,7 @@ describe("collectClientReferenceRouteSignatures", () => {
 
     expect(Object.fromEntries(signatures)).toEqual({
       "/grid.tsx": "/photos",
-      "/modal.tsx": "intercept:/app/@modal/(.)photo/page.tsx",
+      "/modal.tsx": "intercept:/photos->/photo",
     });
   });
 
