@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "pathslash";
 import type { Rollup } from "vite";
-import { actionOwnerInterceptEntryIds, actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
-import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
+import { actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
 
 /**
  * Client references whose estimated group cost (see
@@ -16,52 +15,31 @@ export const CLIENT_REFERENCE_GROUP_MAX_COST_BYTES = 100 * 1024;
 
 type ClientReferenceGroupRoute = Parameters<typeof actionOwnerRouteEntryIds>[0];
 
-type Intercept = ClientReferenceGroupRoute["siblingIntercepts"][number];
+type ClientReferenceGroupIntercept = ClientReferenceGroupRoute["siblingIntercepts"][number];
 
 type ModuleGraphInfo = Pick<Rollup.ModuleInfo, "dynamicallyImportedIds" | "importedIds">;
 
-/**
- * The owners that can reach a route's client references, with their roots.
- * Intercepting routes only render on soft navigation, so each one is its own
- * owner rather than part of the route whose slot contains it.
- */
-function routeOwners(route: ClientReferenceGroupRoute): [owner: string, roots: string[]][] {
-  // Owner ids follow the route graph's interception ids (slot plus source and
-  // target patterns). They contain no absolute paths, so group ids stay stable.
-  const interceptOwner = (intercept: Intercept, slotId: string): [string, string[]] => [
-    intercept.id ??
-      createAppRouteGraphInterceptionId(
-        slotId,
-        intercept.sourceMatchPattern,
-        intercept.targetPattern,
-      ),
-    actionOwnerInterceptEntryIds(intercept),
-  ];
-  const routeRoots = actionOwnerRouteEntryIds({
-    ...route,
-    parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
-    siblingIntercepts: [],
-  });
+function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
   return [
-    [route.pattern, routeRoots],
-    ...route.parallelSlots.flatMap((slot) =>
-      slot.interceptingRoutes.map((intercept) => interceptOwner(intercept, slot.id ?? slot.key)),
-    ),
-    ...route.siblingIntercepts.map((intercept) =>
-      interceptOwner(intercept, intercept.slotId ?? ""),
-    ),
-  ];
+    intercept.pagePath,
+    ...intercept.layoutPaths,
+    ...(intercept.loadingPaths ?? []),
+    intercept.notFoundPath,
+  ].filter((value): value is string => typeof value === "string");
 }
 
 /**
- * Map each client reference reachable from App Router route modules to a
- * signature naming the owners that reach it: routes, intercepting routes, and
- * each shared root (global-error, global-not-found) on its own. References
- * with the same signature are always needed together, mirroring Next.js'
- * per-route client entries. The map is in the order the walk first reaches
- * each reference, which follows ES module evaluation order.
+ * Map each client reference reachable from App Router route files to a
+ * signature naming the owners that reach it. A route owns its page, layouts,
+ * templates, boundaries and parallel slots, which render with it. Intercepting
+ * routes (which only render on soft navigation), global-error and
+ * global-not-found render on their own, so each is owned by its file, named by
+ * its path relative to `root`. References with the same signature are needed
+ * together, mirroring Next.js' per-route client entries. The map is in the
+ * order a depth-first walk in import order first reaches each reference, which
+ * follows ES module evaluation order.
  *
- * References reachable from no route module (for example vinext's internal
+ * References reachable from no route file (for example vinext's internal
  * runtime references) are omitted and keep their own lazy chunk. So are
  * references that route code reaches through a dynamic import (`next/dynamic`,
  * `React.lazy`), directly or through the dynamically imported module's graph.
@@ -70,6 +48,7 @@ export function collectClientReferenceRouteSignatures(options: {
   canonicalizeModuleId?: (id: string) => string;
   clientReferenceIds: ReadonlySet<string>;
   getModuleInfo: (id: string) => ModuleGraphInfo | null;
+  root: string;
   routes: readonly ClientReferenceGroupRoute[];
   sharedRoots?: readonly string[];
 }): Map<string, string> {
@@ -104,17 +83,15 @@ export function collectClientReferenceRouteSignatures(options: {
     }
   };
 
-  // Layouts and boundaries are shared by many routes, so walk each route
-  // module's graph once and reuse it for every route that includes it. The
-  // walk is depth-first in import order, so references are recorded in the
-  // order ES module evaluation reaches them.
-  const referencesByRoot = new Map<string, Set<string>>();
-  const referencesReachedFrom = (root: string) => {
-    let references = referencesByRoot.get(root);
+  // Layouts and boundaries are shared by many routes, so walk each route file's
+  // graph once and reuse it for every route that includes it.
+  const referencesByFile = new Map<string, Set<string>>();
+  const referencesReachedFrom = (file: string) => {
+    let references = referencesByFile.get(file);
     if (references) return references;
     references = new Set();
     const visited = new Set<string>();
-    const stack = [root];
+    const stack = [canonicalize(file)];
     while (stack.length > 0) {
       const id = stack.pop()!;
       if (visited.has(id)) continue;
@@ -130,14 +107,14 @@ export function collectClientReferenceRouteSignatures(options: {
         stack.push(info.importedIds[index]!);
       }
     }
-    referencesByRoot.set(root, references);
+    referencesByFile.set(file, references);
     return references;
   };
 
   const owners = new Map<string, Set<string>>();
-  const addOwner = (owner: string, roots: readonly string[]) => {
-    for (const root of roots) {
-      for (const reference of referencesReachedFrom(canonicalize(root))) {
+  const addOwner = (owner: string, files: readonly string[]) => {
+    for (const file of files) {
+      for (const reference of referencesReachedFrom(file)) {
         let referenceOwners = owners.get(reference);
         if (!referenceOwners) {
           referenceOwners = new Set();
@@ -147,12 +124,25 @@ export function collectClientReferenceRouteSignatures(options: {
       }
     }
   };
+  const fileOwner = (file: string) => path.relative(options.root, file);
   for (const route of options.routes) {
-    for (const [owner, roots] of routeOwners(route)) addOwner(owner, roots);
+    addOwner(
+      route.pattern,
+      actionOwnerRouteEntryIds({
+        ...route,
+        parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
+        siblingIntercepts: [],
+      }),
+    );
+    const intercepts = [
+      ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
+      ...route.siblingIntercepts,
+    ];
+    for (const intercept of intercepts) {
+      addOwner(fileOwner(intercept.pagePath), interceptEntryIds(intercept));
+    }
   }
-  for (const root of options.sharedRoots ?? []) {
-    addOwner(`shared:${path.basename(root, path.extname(root))}`, [root]);
-  }
+  for (const file of options.sharedRoots ?? []) addOwner(fileOwner(file), [file]);
 
   const signatures = new Map<string, string>();
   for (const [reference, referenceOwners] of owners) {

@@ -57,11 +57,12 @@ describe("collectClientReferenceRouteSignatures", () => {
         {
           "/app/layout.tsx": ["/header.tsx", "/theme.tsx"],
           "/header.tsx": ["/nav.tsx"],
-          "/app/page.tsx": ["/chart.tsx"],
+          "/app/page.tsx": ["/chart.tsx", "/nav.tsx"],
           "/about/lazy-section.tsx": ["/lazy-panel.tsx"],
         },
         { "/app/about/page.tsx": ["/lazy.tsx", "/about/lazy-section.tsx"] },
       ),
+      root: "/",
       routes: [
         route("/", "/app/page.tsx", ["/app/layout.tsx"]),
         route("/about", "/app/about/page.tsx", ["/app/layout.tsx"]),
@@ -69,99 +70,58 @@ describe("collectClientReferenceRouteSignatures", () => {
     });
 
     expect(Object.fromEntries(signatures)).toEqual({
+      "/chart.tsx": "/",
       "/nav.tsx": "/\n/about",
       "/theme.tsx": "/\n/about",
-      "/chart.tsx": "/",
     });
   });
 
-  it("orders references by module evaluation order", () => {
+  it("gives intercepts and shared roots their own file owners", () => {
     const signatures = collectClientReferenceRouteSignatures({
-      clientReferenceIds: new Set(["/a.tsx", "/b.tsx", "/c.tsx"]),
+      clientReferenceIds: new Set([
+        "/retry.tsx",
+        "/search.tsx",
+        "/modal.tsx",
+        "/drawer.tsx",
+        "/grid.tsx",
+      ]),
       getModuleInfo: moduleInfo({
-        "/app/page.tsx": ["/helper.ts", "/a.tsx", "/c.tsx"],
-        "/helper.ts": ["/b.tsx", "/c.tsx"],
+        "/repo/app/global-error.tsx": ["/retry.tsx"],
+        "/repo/app/global-not-found.tsx": ["/search.tsx"],
+        "/repo/app/photos/page.tsx": ["/grid.tsx"],
+        "/repo/app/@modal/(.)photo/page.tsx": ["/modal.tsx"],
+        "/repo/app/photos/@drawer/(.)photo/page.tsx": ["/drawer.tsx"],
       }),
-      routes: [route("/", "/app/page.tsx")],
-    });
-
-    expect([...signatures.keys()]).toEqual(["/b.tsx", "/c.tsx", "/a.tsx"]);
-  });
-
-  it("gives each shared root its own owner", () => {
-    const signatures = collectClientReferenceRouteSignatures({
-      clientReferenceIds: new Set(["/retry.tsx", "/search.tsx", "/nav.tsx"]),
-      getModuleInfo: moduleInfo({
-        "/app/global-error.tsx": ["/retry.tsx", "/nav.tsx"],
-        "/app/global-not-found.tsx": ["/search.tsx"],
-        "/app/page.tsx": ["/nav.tsx"],
-      }),
-      routes: [route("/", "/app/page.tsx")],
-      sharedRoots: ["/app/global-error.tsx", "/app/global-not-found.tsx"],
-    });
-
-    expect(Object.fromEntries(signatures)).toEqual({
-      "/nav.tsx": "/\nshared:global-error",
-      "/retry.tsx": "shared:global-error",
-      "/search.tsx": "shared:global-not-found",
-    });
-  });
-
-  it("gives each interception edge its own owner", () => {
-    const intercept = (slot: string) => ({
-      convention: ".",
-      layoutPaths: [],
-      notFoundPath: null,
-      pagePath: `/app/${slot}/(.)photo/page.tsx`,
-      sourceMatchPattern: "/photos",
-      targetPattern: "/photo",
-    });
-    const slot = (name: string) => ({
-      defaultPath: null,
-      errorPath: null,
-      id: `slot:${name}:/photos`,
-      interceptingRoutes: [intercept(`@${name}`)],
-      key: `${name}@photos/@${name}`,
-      layoutPath: null,
-      loadingPath: null,
-      name,
-      pagePath: null,
-    });
-    const photos = {
-      ...route("/photos", "/app/photos/page.tsx"),
-      parallelSlots: [slot("modal"), slot("drawer")],
-      siblingIntercepts: [
-        { ...intercept("(.)gallery"), slotId: "slot:__vinext_sibling_intercept:/photos" },
+      root: "/repo",
+      routes: [
+        {
+          ...route("/photos", "/repo/app/photos/page.tsx"),
+          parallelSlots: [
+            {
+              interceptingRoutes: [
+                {
+                  layoutPaths: [],
+                  notFoundPath: null,
+                  pagePath: "/repo/app/photos/@drawer/(.)photo/page.tsx",
+                },
+              ],
+            },
+          ],
+          siblingIntercepts: [
+            { layoutPaths: [], notFoundPath: null, pagePath: "/repo/app/@modal/(.)photo/page.tsx" },
+          ],
+        } as never,
       ],
-    };
-    const signatures = collectClientReferenceRouteSignatures({
-      clientReferenceIds: new Set(["/grid.tsx", "/modal.tsx", "/drawer.tsx", "/gallery.tsx"]),
-      getModuleInfo: moduleInfo({
-        "/app/photos/page.tsx": ["/grid.tsx"],
-        "/app/@modal/(.)photo/page.tsx": ["/modal.tsx"],
-        "/app/@drawer/(.)photo/page.tsx": ["/drawer.tsx"],
-        "/app/(.)gallery/(.)photo/page.tsx": ["/gallery.tsx"],
-      }),
-      routes: [photos as never],
+      sharedRoots: ["/repo/app/global-error.tsx", "/repo/app/global-not-found.tsx"],
     });
 
     expect(Object.fromEntries(signatures)).toEqual({
       "/grid.tsx": "/photos",
-      "/modal.tsx": "interception:slot:modal:/photos:/photos->/photo",
-      "/drawer.tsx": "interception:slot:drawer:/photos:/photos->/photo",
-      "/gallery.tsx": "interception:slot:__vinext_sibling_intercept:/photos:/photos->/photo",
+      "/modal.tsx": "app/@modal/(.)photo/page.tsx",
+      "/drawer.tsx": "app/photos/@drawer/(.)photo/page.tsx",
+      "/retry.tsx": "app/global-error.tsx",
+      "/search.tsx": "app/global-not-found.tsx",
     });
-  });
-
-  it("canonicalizes route roots before walking the module graph", () => {
-    const signatures = collectClientReferenceRouteSignatures({
-      canonicalizeModuleId: (id) => id.replace("/var/", "/private/var/"),
-      clientReferenceIds: new Set(["/nav.tsx"]),
-      getModuleInfo: moduleInfo({ "/private/var/app/page.tsx": ["/nav.tsx"] }),
-      routes: [route("/", "/var/app/page.tsx")],
-    });
-
-    expect(signatures.get("/nav.tsx")).toBe("/");
   });
 
   it("does not walk through client references", () => {
@@ -171,10 +131,37 @@ describe("collectClientReferenceRouteSignatures", () => {
         "/app/page.tsx": ["/client.tsx"],
         "/client.tsx": ["/inner.tsx"],
       }),
+      root: "/",
       routes: [route("/", "/app/page.tsx")],
     });
 
     expect([...signatures.keys()]).toEqual(["/client.tsx"]);
+  });
+
+  it("orders references by module evaluation order", () => {
+    const signatures = collectClientReferenceRouteSignatures({
+      clientReferenceIds: new Set(["/a.tsx", "/b.tsx", "/c.tsx"]),
+      getModuleInfo: moduleInfo({
+        "/app/page.tsx": ["/helper.ts", "/a.tsx", "/c.tsx"],
+        "/helper.ts": ["/b.tsx", "/c.tsx"],
+      }),
+      root: "/",
+      routes: [route("/", "/app/page.tsx")],
+    });
+
+    expect([...signatures.keys()]).toEqual(["/b.tsx", "/c.tsx", "/a.tsx"]);
+  });
+
+  it("canonicalizes route files before walking the module graph", () => {
+    const signatures = collectClientReferenceRouteSignatures({
+      canonicalizeModuleId: (id) => id.replace("/var/", "/private/var/"),
+      clientReferenceIds: new Set(["/nav.tsx"]),
+      getModuleInfo: moduleInfo({ "/private/var/app/page.tsx": ["/nav.tsx"] }),
+      root: "/var",
+      routes: [route("/", "/var/app/page.tsx")],
+    });
+
+    expect(signatures.get("/nav.tsx")).toBe("/");
   });
 });
 

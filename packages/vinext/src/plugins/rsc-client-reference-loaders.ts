@@ -99,6 +99,7 @@ export function createRscClientReferenceLoadersPlugin(
   grouping?: RscClientReferenceGroupingOptions,
 ): Plugin {
   let rscApi: PluginApi | undefined;
+  let root = "";
   let groupingEnabled = false;
   // Client reference id -> signature of the routes that reach it, collected
   // from the RSC graph, which @vitejs/plugin-rsc builds before the client.
@@ -109,6 +110,7 @@ export function createRscClientReferenceLoadersPlugin(
     name: "vinext:rsc-client-reference-loaders",
     enforce: "post",
     configResolved(config) {
+      root = config.root;
       rscApi = (
         config.plugins.find((plugin) => plugin.name === "rsc:minimal") as
           | RscPluginWithApi
@@ -141,6 +143,7 @@ export function createRscClientReferenceLoadersPlugin(
         canonicalizeModuleId: grouping.canonicalizeModuleId,
         clientReferenceIds: new Set(Object.keys(manager.clientReferenceMetaMap)),
         getModuleInfo: (id) => this.getModuleInfo(id),
+        root,
         routes,
         sharedRoots: grouping.getSharedRoots(),
       });

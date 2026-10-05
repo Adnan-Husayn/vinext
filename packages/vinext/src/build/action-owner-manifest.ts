@@ -63,20 +63,19 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       ...(slot.loadingPaths ?? []),
       slot.errorPath,
       slot.notFoundPath,
-      ...slot.interceptingRoutes.flatMap(actionOwnerInterceptEntryIds),
+      ...slot.interceptingRoutes.flatMap((intercept) => [
+        intercept.pagePath,
+        ...intercept.layoutPaths,
+        ...(intercept.loadingPaths ?? []),
+        intercept.notFoundPath,
+      ]),
     ]),
-    ...route.siblingIntercepts.flatMap(actionOwnerInterceptEntryIds),
-  ].filter((value): value is string => typeof value === "string");
-}
-
-type ActionOwnerIntercept = ActionOwnerRoute["siblingIntercepts"][number];
-
-export function actionOwnerInterceptEntryIds(intercept: ActionOwnerIntercept): string[] {
-  return [
-    intercept.pagePath,
-    ...intercept.layoutPaths,
-    ...(intercept.loadingPaths ?? []),
-    intercept.notFoundPath,
+    ...route.siblingIntercepts.flatMap((intercept) => [
+      intercept.pagePath,
+      ...intercept.layoutPaths,
+      ...(intercept.loadingPaths ?? []),
+      intercept.notFoundPath,
+    ]),
   ].filter((value): value is string => typeof value === "string");
 }
 
