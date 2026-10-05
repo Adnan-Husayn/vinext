@@ -315,7 +315,10 @@ import {
 } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
-import { stripEsmCommonJsExportFacade } from "./plugins/commonjs-esm-facade.js";
+import {
+  commonJsEsmFacadeOptimizeDepsPlugin,
+  stripEsmCommonJsExportFacade,
+} from "./plugins/commonjs-esm-facade.js";
 import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
   createRequireConditionResolutionPlugin,
@@ -681,39 +684,6 @@ function commonjsTransformFilter(
     return transformProjectLocalCommonJs;
   }
   return undefined;
-}
-
-type CommonJsPreBundleLoad = (args: { path: string }) => Promise<{ contents?: unknown } | void>;
-
-type CommonJsPreBundlePlugin = {
-  name: string;
-  setup: (build: { onLoad(options: object, callback: CommonJsPreBundleLoad): void }) => unknown;
-};
-
-const preBundlePluginsWithoutEsmFacade = new WeakSet<CommonJsPreBundlePlugin>();
-
-/** Applies {@link stripEsmCommonJsExportFacade} to vite-plugin-commonjs's pre-bundle loads. */
-function stripEsmExportFacadeInPreBundle(plugin: CommonJsPreBundlePlugin): void {
-  if (preBundlePluginsWithoutEsmFacade.has(plugin)) return;
-  preBundlePluginsWithoutEsmFacade.add(plugin);
-  const setup = plugin.setup;
-  plugin.setup = (build) =>
-    setup.call(
-      plugin,
-      // Inherit the rest of the build: Vite's esbuild shim throws from getters
-      // it does not implement, so its properties must not be copied.
-      Object.create(build, {
-        onLoad: {
-          value: (options: object, load: CommonJsPreBundleLoad) =>
-            build.onLoad(options, async (args) => {
-              const result = await load(args);
-              if (typeof result?.contents !== "string") return result;
-              const contents = stripEsmCommonJsExportFacade(result.contents);
-              return contents === undefined ? result : { ...result, contents };
-            }),
-        },
-      }),
-    );
 }
 
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
@@ -2287,24 +2257,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       handler: environmentAwareCommonJsTransform,
     };
   }
-  // The pre-bundle plugin transforms files without the wrapper above, so it
-  // must drop the same facade, or one ESM module that inlines CommonJS
-  // wrappers fails the whole dependency scan.
-  const commonJsConfigResolved = commonJsPlugin.configResolved;
-  if (typeof commonJsConfigResolved === "function") {
-    commonJsPlugin.configResolved = function (config) {
-      const result = commonJsConfigResolved.call(this, config);
-      const esbuildOptions = config.optimizeDeps.esbuildOptions as
-        | { plugins?: CommonJsPreBundlePlugin[] }
-        | undefined;
-      for (const plugin of esbuildOptions?.plugins ?? []) {
-        if (plugin.name === "vite-plugin-commonjs:pre-bundle") {
-          stripEsmExportFacadeInPreBundle(plugin);
-        }
-      }
-      return result;
-    };
-  }
 
   const buildLifecyclePlugins = createBuildLifecyclePlugins({
     isEnabled: (builder) =>
@@ -3820,7 +3772,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
-            plugins: [depOptimizeAliasPlugin],
+            // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
+            plugins: [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
           },
         };
         pagesOptimizeEntries = !hasAppDir

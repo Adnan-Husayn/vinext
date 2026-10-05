@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import { createLogger, createServer, type ViteDevServer } from "vite-plus";
 import type { Server } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+import { toSlash } from "pathslash";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -88,8 +90,8 @@ describe("CJS interop (App Router)", () => {
 describe("CJS interop (dependency scan)", () => {
   it("does not add a CommonJS export facade to project-local ESM bundles", async () => {
     // vite-plugin-commonjs's optimizer plugin loads and transforms files
-    // without vinext's transform wrapper, so the scan must drop the same export
-    // facade for app/cjs/bundled-esm and app/cjs/mixed-esm.
+    // without vinext's transform wrapper, so the optimizer must drop the same
+    // export facade for app/cjs/bundled-esm and app/cjs/mixed-esm.
     const errors: string[] = [];
     const logger = createLogger("silent");
     logger.error = (message) => {
@@ -112,6 +114,40 @@ describe("CJS interop (dependency scan)", () => {
           ?.scanProcessing;
       }
       expect(errors.filter((error) => error.includes("dependency scan"))).toEqual([]);
+    } finally {
+      await server.close();
+      await rm(cacheDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it("pre-bundles a linked CommonJS package from outside node_modules", async () => {
+    // A linked workspace package resolves outside node_modules and reaches the
+    // optimizer when it is listed in optimizeDeps.include. Its dynamic require()
+    // must be expanded there, which Rolldown alone leaves to a runtime require.
+    const linkedPackageDir = path.resolve(import.meta.dirname, "fixtures/linked-cjs-package");
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "vinext-cjs-linked-"));
+    const server = await createServer({
+      root: APP_FIXTURE_DIR,
+      cacheDir,
+      configFile: false,
+      customLogger: createLogger("silent"),
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      resolve: { alias: { "linked-cjs-package": linkedPackageDir } },
+      optimizeDeps: { include: ["linked-cjs-package"] },
+      server: { host: "127.0.0.1", port: 0 },
+    });
+    try {
+      await server.listen();
+      const optimizer = server.environments.client.depsOptimizer;
+      await optimizer?.scanProcessing;
+      // Discovered on the scan, then optimized once the first run commits.
+      const info =
+        optimizer?.metadata.optimized["linked-cjs-package"] ??
+        optimizer?.metadata.discovered["linked-cjs-package"];
+      expect(info?.src).toBe(toSlash(path.join(linkedPackageDir, "index.js")));
+      await info?.processing;
+      const optimized = await import(pathToFileURL(info!.file).href);
+      expect(optimized.default.named).toBe("linked");
     } finally {
       await server.close();
       await rm(cacheDir, { recursive: true, force: true });
