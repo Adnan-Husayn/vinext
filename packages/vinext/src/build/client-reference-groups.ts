@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "pathslash";
 import type { Rollup } from "vite";
 import { actionOwnerInterceptEntryIds, actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
+import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 
 /**
  * Client references whose estimated group cost (see
@@ -15,6 +16,8 @@ export const CLIENT_REFERENCE_GROUP_MAX_COST_BYTES = 100 * 1024;
 
 type ClientReferenceGroupRoute = Parameters<typeof actionOwnerRouteEntryIds>[0];
 
+type Intercept = ClientReferenceGroupRoute["siblingIntercepts"][number];
+
 type ModuleGraphInfo = Pick<Rollup.ModuleInfo, "dynamicallyImportedIds" | "importedIds">;
 
 /**
@@ -23,9 +26,16 @@ type ModuleGraphInfo = Pick<Rollup.ModuleInfo, "dynamicallyImportedIds" | "impor
  * owner rather than part of the route whose slot contains it.
  */
 function routeOwners(route: ClientReferenceGroupRoute): [owner: string, roots: string[]][] {
-  const intercepts = [
-    ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
-    ...route.siblingIntercepts,
+  // Owner ids follow the route graph's interception ids (slot plus source and
+  // target patterns). They contain no absolute paths, so group ids stay stable.
+  const interceptOwner = (intercept: Intercept, slotId: string): [string, string[]] => [
+    intercept.id ??
+      createAppRouteGraphInterceptionId(
+        slotId,
+        intercept.sourceMatchPattern,
+        intercept.targetPattern,
+      ),
+    actionOwnerInterceptEntryIds(intercept),
   ];
   const routeRoots = actionOwnerRouteEntryIds({
     ...route,
@@ -34,12 +44,12 @@ function routeOwners(route: ClientReferenceGroupRoute): [owner: string, roots: s
   });
   return [
     [route.pattern, routeRoots],
-    ...intercepts.map((intercept): [string, string[]] => [
-      // The route graph's interception id names the slot and the source and
-      // target patterns, without absolute paths, so group ids stay stable.
-      intercept.id ?? `interception:${intercept.sourceMatchPattern}->${intercept.targetPattern}`,
-      actionOwnerInterceptEntryIds(intercept),
-    ]),
+    ...route.parallelSlots.flatMap((slot) =>
+      slot.interceptingRoutes.map((intercept) => interceptOwner(intercept, slot.id ?? slot.key)),
+    ),
+    ...route.siblingIntercepts.map((intercept) =>
+      interceptOwner(intercept, intercept.slotId ?? ""),
+    ),
   ];
 }
 

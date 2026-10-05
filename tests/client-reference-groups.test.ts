@@ -110,31 +110,46 @@ describe("collectClientReferenceRouteSignatures", () => {
   it("gives each interception edge its own owner", () => {
     const intercept = (slot: string) => ({
       convention: ".",
-      id: `interception:slot:${slot}:/->/photo`,
       layoutPaths: [],
       notFoundPath: null,
       pagePath: `/app/${slot}/(.)photo/page.tsx`,
       sourceMatchPattern: "/photos",
       targetPattern: "/photo",
     });
+    const slot = (name: string) => ({
+      defaultPath: null,
+      errorPath: null,
+      id: `slot:${name}:/photos`,
+      interceptingRoutes: [intercept(`@${name}`)],
+      key: `${name}@photos/@${name}`,
+      layoutPath: null,
+      loadingPath: null,
+      name,
+      pagePath: null,
+    });
     const photos = {
       ...route("/photos", "/app/photos/page.tsx"),
-      siblingIntercepts: [intercept("@modal"), intercept("@drawer")],
+      parallelSlots: [slot("modal"), slot("drawer")],
+      siblingIntercepts: [
+        { ...intercept("(.)gallery"), slotId: "slot:__vinext_sibling_intercept:/photos" },
+      ],
     };
     const signatures = collectClientReferenceRouteSignatures({
-      clientReferenceIds: new Set(["/grid.tsx", "/modal.tsx", "/drawer.tsx"]),
+      clientReferenceIds: new Set(["/grid.tsx", "/modal.tsx", "/drawer.tsx", "/gallery.tsx"]),
       getModuleInfo: moduleInfo({
         "/app/photos/page.tsx": ["/grid.tsx"],
         "/app/@modal/(.)photo/page.tsx": ["/modal.tsx"],
         "/app/@drawer/(.)photo/page.tsx": ["/drawer.tsx"],
+        "/app/(.)gallery/(.)photo/page.tsx": ["/gallery.tsx"],
       }),
       routes: [photos as never],
     });
 
     expect(Object.fromEntries(signatures)).toEqual({
       "/grid.tsx": "/photos",
-      "/modal.tsx": "interception:slot:@modal:/->/photo",
-      "/drawer.tsx": "interception:slot:@drawer:/->/photo",
+      "/modal.tsx": "interception:slot:modal:/photos:/photos->/photo",
+      "/drawer.tsx": "interception:slot:drawer:/photos:/photos->/photo",
+      "/gallery.tsx": "interception:slot:__vinext_sibling_intercept:/photos:/photos->/photo",
     });
   });
 
