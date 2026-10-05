@@ -107,31 +107,34 @@ describe("collectClientReferenceRouteSignatures", () => {
     });
   });
 
-  it("gives intercepting routes their own owner", () => {
-    const intercept = {
+  it("gives each interception edge its own owner", () => {
+    const intercept = (slot: string) => ({
       convention: ".",
+      id: `interception:slot:${slot}:/->/photo`,
       layoutPaths: [],
       notFoundPath: null,
-      pagePath: "/app/@modal/(.)photo/page.tsx",
+      pagePath: `/app/${slot}/(.)photo/page.tsx`,
       sourceMatchPattern: "/photos",
       targetPattern: "/photo",
-    };
+    });
     const photos = {
       ...route("/photos", "/app/photos/page.tsx"),
-      siblingIntercepts: [intercept],
+      siblingIntercepts: [intercept("@modal"), intercept("@drawer")],
     };
     const signatures = collectClientReferenceRouteSignatures({
-      clientReferenceIds: new Set(["/grid.tsx", "/modal.tsx"]),
+      clientReferenceIds: new Set(["/grid.tsx", "/modal.tsx", "/drawer.tsx"]),
       getModuleInfo: moduleInfo({
         "/app/photos/page.tsx": ["/grid.tsx"],
         "/app/@modal/(.)photo/page.tsx": ["/modal.tsx"],
+        "/app/@drawer/(.)photo/page.tsx": ["/drawer.tsx"],
       }),
       routes: [photos as never],
     });
 
     expect(Object.fromEntries(signatures)).toEqual({
       "/grid.tsx": "/photos",
-      "/modal.tsx": "intercept:/photos->/photo",
+      "/modal.tsx": "interception:slot:@modal:/->/photo",
+      "/drawer.tsx": "interception:slot:@drawer:/->/photo",
     });
   });
 

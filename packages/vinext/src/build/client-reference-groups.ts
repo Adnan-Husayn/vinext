@@ -35,9 +35,9 @@ function routeOwners(route: ClientReferenceGroupRoute): [owner: string, roots: s
   return [
     [route.pattern, routeRoots],
     ...intercepts.map((intercept): [string, string[]] => [
-      // Intercepts of the same navigation render together, so they share an
-      // owner. Owner ids stay free of absolute paths to keep group ids stable.
-      `intercept:${intercept.sourceMatchPattern}->${intercept.targetPattern}`,
+      // The route graph's interception id names the slot and the source and
+      // target patterns, without absolute paths, so group ids stay stable.
+      intercept.id ?? `interception:${intercept.sourceMatchPattern}->${intercept.targetPattern}`,
       actionOwnerInterceptEntryIds(intercept),
     ]),
   ];
