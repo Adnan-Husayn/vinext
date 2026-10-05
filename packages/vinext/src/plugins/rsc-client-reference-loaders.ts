@@ -1,13 +1,33 @@
-import type { Plugin } from "vite";
+import { isCSSRequest, type Plugin } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
+import {
+  CLIENT_REFERENCE_GROUP_MAX_COST_BYTES,
+  collectClientReferenceRouteSignatures,
+  measureClientReferenceGroupCosts,
+  planClientReferenceGroups,
+} from "../build/client-reference-groups.js";
+import type { AppRoute } from "../routing/app-route-graph.js";
 
 const CLIENT_REFERENCES_ID = "\0virtual:vite-rsc/client-references";
 const RESOLVED_ID_PROXY_PREFIX = "virtual:vite-rsc/resolved-id/";
+const CLIENT_REFERENCE_GROUP_PREFIX = "virtual:vinext-client-reference-group-";
+const RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX = `\0${CLIENT_REFERENCE_GROUP_PREFIX}`;
 
 type RscClientReferenceMeta = PluginApi["manager"]["clientReferenceMetaMap"][string];
 
 type RscPluginWithApi = Plugin & {
   api?: PluginApi;
+};
+
+export type RscClientReferenceGroupingOptions = {
+  /** App Router routes of the current build, or null outside App Router builds. */
+  getRoutes: () => readonly AppRoute[] | null;
+  /** Route-independent roots such as global-error and global-not-found. */
+  getSharedRoots: () => readonly string[];
+  /** False when the user configured their own client chunk groups. */
+  isEnabled: () => boolean;
+  /** Modules that live in chunks every page loads anyway (React, vinext runtime). */
+  isAlwaysLoadedClientModule: (id: string) => boolean;
 };
 
 function withResolvedIdProxy(resolvedId: string): string {
@@ -28,15 +48,26 @@ function generateClientReferenceObject(meta: RscClientReferenceMeta): string {
   return exports ? `{\n${exports}\n    }` : "{}";
 }
 
-function generateDirectClientReferenceLoaders(metas: RscClientReferenceMeta[]): string {
+type ClientReferenceGroupSlot = { groupId: string; index: number };
+
+function generateClientReferenceLoaders(
+  metas: RscClientReferenceMeta[],
+  slots: ReadonlyMap<RscClientReferenceMeta, ClientReferenceGroupSlot> = new Map(),
+): string {
   const entries = metas
     .slice()
     .sort((a, b) => a.referenceKey.localeCompare(b.referenceKey))
     .map((meta) => {
-      const importId = withResolvedIdProxy(meta.importId);
+      const slot = slots.get(meta);
+      // Grouped references import their route group and read their own module
+      // namespace from it. The namespace object exists once the group module is
+      // linked, so the lazy getters below stay safe under async evaluation.
+      const load = slot
+        ? `(await import(${JSON.stringify(slot.groupId)})).r${slot.index}`
+        : `await import(${JSON.stringify(withResolvedIdProxy(meta.importId))})`;
       return [
         `  ${JSON.stringify(meta.referenceKey)}: async () => {`,
-        `    const m = await import(${JSON.stringify(importId)});`,
+        `    const m = ${load};`,
         `    return ${generateClientReferenceObject(meta)};`,
         `  },`,
       ].join("\n");
@@ -46,8 +77,43 @@ function generateDirectClientReferenceLoaders(metas: RscClientReferenceMeta[]): 
   return `export default {\n${entries}\n};\n`;
 }
 
-export function createRscClientReferenceLoadersPlugin(): Plugin {
+function generateClientReferenceGroupModule(metas: readonly RscClientReferenceMeta[]): string {
+  const imports = metas.map(
+    (meta, index) =>
+      `import * as r${index} from ${JSON.stringify(withResolvedIdProxy(meta.importId))};`,
+  );
+  return `${imports.join("\n")}\nexport { ${metas.map((_, index) => `r${index}`).join(", ")} };\n`;
+}
+
+function hasGroupableSignature(
+  metaEntries: readonly [string, RscClientReferenceMeta][],
+  routeSignatures: ReadonlyMap<string, string>,
+): boolean {
+  const seen = new Set<string>();
+  for (const [referenceId] of metaEntries) {
+    const signature = routeSignatures.get(referenceId);
+    if (signature === undefined) continue;
+    if (seen.has(signature)) return true;
+    seen.add(signature);
+  }
+  return false;
+}
+
+/**
+ * Replaces @vitejs/plugin-rsc's client-reference facades with per-reference
+ * loaders. With `grouping`, production client builds additionally load
+ * references that the same App Router routes reach through one shared route
+ * group module (see build/client-reference-groups.ts), so a page fetches one
+ * chunk per route group instead of one per `"use client"` module.
+ */
+export function createRscClientReferenceLoadersPlugin(
+  grouping?: RscClientReferenceGroupingOptions,
+): Plugin {
   let rscApi: PluginApi | undefined;
+  // Client reference id -> signature of the routes that reach it, collected
+  // from the RSC graph, which @vitejs/plugin-rsc builds before the client.
+  let routeSignatures = new Map<string, string>();
+  const groupModules = new Map<string, string>();
 
   return {
     name: "vinext:rsc-client-reference-loaders",
@@ -59,7 +125,34 @@ export function createRscClientReferenceLoadersPlugin(): Plugin {
           | undefined
       )?.api;
     },
-    transform(_code, id) {
+    buildStart() {
+      if (this.environment.name === "rsc") routeSignatures = new Map();
+      if (this.environment.name === "client") groupModules.clear();
+    },
+    buildEnd(error) {
+      if (error || !grouping || this.environment.name !== "rsc") return;
+      if (this.environment.mode !== "build" || !grouping.isEnabled()) return;
+      const manager = rscApi?.manager;
+      const routes = grouping.getRoutes();
+      if (!manager || manager.isScanBuild || !routes) return;
+
+      routeSignatures = collectClientReferenceRouteSignatures({
+        clientReferenceIds: new Set(Object.keys(manager.clientReferenceMetaMap)),
+        getModuleInfo: (id) => this.getModuleInfo(id),
+        routes,
+        sharedRoots: grouping.getSharedRoots(),
+      });
+    },
+    resolveId(source) {
+      if (source.startsWith(CLIENT_REFERENCE_GROUP_PREFIX) && groupModules.has(`\0${source}`)) {
+        return `\0${source}`;
+      }
+      return null;
+    },
+    load(id) {
+      return groupModules.get(id) ?? null;
+    },
+    async transform(_code, id) {
       if (id !== CLIENT_REFERENCES_ID) return null;
 
       const manager = rscApi?.manager;
@@ -83,8 +176,61 @@ export function createRscClientReferenceLoadersPlugin(): Plugin {
         meta.groupChunkId = id;
       }
 
+      const slots = new Map<RscClientReferenceMeta, ClientReferenceGroupSlot>();
+      if (
+        grouping?.isEnabled() &&
+        this.environment.name === "client" &&
+        this.environment.mode === "build" &&
+        hasGroupableSignature(metaEntries, routeSignatures)
+      ) {
+        // Reference ids come from the RSC graph; resolve each import id in this
+        // environment so packages are measured through their browser entry.
+        const references = new Map<string, string>();
+        await Promise.all(
+          metaEntries.map(async ([referenceId, meta]) => {
+            if (meta.importId.startsWith("\0")) {
+              references.set(referenceId, meta.importId);
+              return;
+            }
+            const resolved = await this.resolve(meta.importId);
+            if (resolved && !resolved.external) references.set(referenceId, resolved.id);
+          }),
+        );
+        // Measure every reference, not just grouping candidates, so code shared
+        // with an ungroupable reference still counts as shared.
+        const costs = await measureClientReferenceGroupCosts({
+          references,
+          loadModule: async (moduleId) => {
+            const info = await this.load({ id: moduleId });
+            return { code: info.code, importedIds: info.importedIds };
+          },
+          isExcluded: (moduleId) =>
+            moduleId === CLIENT_REFERENCES_ID ||
+            moduleId.startsWith(RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX) ||
+            isCSSRequest(moduleId) ||
+            grouping.isAlwaysLoadedClientModule(moduleId),
+        });
+        const groups = planClientReferenceGroups({
+          referenceIds: metaEntries.map(([referenceId]) => referenceId),
+          signatures: routeSignatures,
+          costs,
+          maxCostBytes: CLIENT_REFERENCE_GROUP_MAX_COST_BYTES,
+        });
+        const metaById = new Map(metaEntries);
+        for (const group of groups) {
+          const groupMetas = group.referenceIds.map((referenceId) => metaById.get(referenceId)!);
+          const resolvedGroupId = `${RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX}${group.key}`;
+          groupModules.set(resolvedGroupId, generateClientReferenceGroupModule(groupMetas));
+          groupMetas.forEach((meta, index) => {
+            // Asset deps for every member come from the shared group chunk.
+            meta.groupChunkId = resolvedGroupId;
+            slots.set(meta, { groupId: resolvedGroupId.slice(1), index });
+          });
+        }
+      }
+
       return {
-        code: generateDirectClientReferenceLoaders(metas),
+        code: generateClientReferenceLoaders(metas, slots),
         map: null,
       };
     },

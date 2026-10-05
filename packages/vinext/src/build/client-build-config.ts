@@ -371,3 +371,34 @@ export function createMultiStageChunkFileNames(
     return pattern.replaceAll("[name]", name);
   };
 }
+
+function hasChunkGroups(output: unknown): boolean {
+  if (!output || typeof output !== "object") return false;
+  const { advancedChunks, codeSplitting, manualChunks } = output as {
+    advancedChunks?: { groups?: readonly unknown[] };
+    codeSplitting?: unknown;
+    manualChunks?: unknown;
+  };
+  if (manualChunks !== undefined) return true;
+  if ((advancedChunks?.groups?.length ?? 0) > 0) return true;
+  if (!codeSplitting || typeof codeSplitting !== "object") return false;
+  return ((codeSplitting as { groups?: readonly unknown[] }).groups?.length ?? 0) > 0;
+}
+
+/**
+ * Whether the user configured their own client chunk groups (`codeSplitting.groups`,
+ * `advancedChunks.groups` or `manualChunks`) at the top level or on the client
+ * environment. vinext's client-reference route grouping is disabled in that
+ * case: a manual group can move modules out of a route group's chunk, and that
+ * combination has been seen to evaluate modules out of order and break
+ * hydration.
+ */
+export function hasUserClientChunkGroups(config: UserConfig): boolean {
+  const builds = [config.build, config.environments?.client?.build];
+  return builds.some((build) => {
+    if (!build) return false;
+    return [build.rolldownOptions?.output, build.rollupOptions?.output].some((output) =>
+      Array.isArray(output) ? output.some(hasChunkGroups) : hasChunkGroups(output),
+    );
+  });
+}

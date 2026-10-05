@@ -290,6 +290,7 @@ import {
   createRscFrameworkChunkOutputConfig,
   getClientTreeshakeConfig,
   getBuildBundlerOptions,
+  hasUserClientChunkGroups,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
 import {
@@ -1735,6 +1736,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
+  let clientReferenceGroupRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let hasUserClientChunkGroupsConfig = false;
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -2519,6 +2522,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
+        hasUserClientChunkGroupsConfig = hasUserClientChunkGroups(config);
         root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
         const devCliLifecycleEnabled =
           env.command === "serve" &&
@@ -4873,6 +4877,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
                 (path): path is string => path !== null,
               );
+              clientReferenceGroupRoutes =
+                this.environment.config.command === "build" ? routes : null;
             }
             const generateEntry =
               id === RESOLVED_APP_REQUEST_ENTRY
@@ -8453,7 +8459,17 @@ export const loadServerActionClient = ${
   }
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
-    plugins.push(createRscClientReferenceLoadersPlugin());
+    plugins.push(
+      createRscClientReferenceLoadersPlugin({
+        getRoutes: () => clientReferenceGroupRoutes,
+        getSharedRoots: () => rscActionOwnerSharedRoots,
+        isEnabled: () => !hasUserClientChunkGroupsConfig,
+        isAlwaysLoadedClientModule(id) {
+          const chunkName = appClientManualChunks(id);
+          return chunkName === "framework" || chunkName === "vinext";
+        },
+      }),
+    );
   } else if (manualUseCachePluginPromise) {
     plugins.push(manualUseCachePluginPromise);
   }
