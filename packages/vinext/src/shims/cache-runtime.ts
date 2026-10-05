@@ -44,7 +44,11 @@ import {
   type CacheLifeConfig,
 } from "./cache-request-state.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
-import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
+import {
+  addCollectedRequestTags,
+  getCurrentFetchSoftTags,
+  runWithDetachedFetchObservations,
+} from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
@@ -591,10 +595,13 @@ function isServableCacheState(cacheState: string | undefined): boolean {
   return cacheState !== "stale" || shouldServeStaleUnstableCacheEntry();
 }
 
-// Like Next.js, the background regeneration feeds neither its cache life nor its tags back
-// into the request (or an enclosing cache) that served the stale value.
+// Like Next.js, the background regeneration feeds neither its cache life nor its tags (its
+// own or its fetches') back into the request, or an enclosing cache, that served the stale
+// value.
 function regenerateInBackground(id: string, regenerate: () => Promise<unknown>): void {
-  const regeneration = _runWithCacheState(() => cacheContextStorage.exit(regenerate)).then(
+  const regeneration = _runWithCacheState(() =>
+    runWithDetachedFetchObservations(() => cacheContextStorage.exit(regenerate)),
+  ).then(
     () => undefined,
     (error: unknown) => {
       console.error(`[vinext] use cache: background regeneration failed for ${id}:`, error);

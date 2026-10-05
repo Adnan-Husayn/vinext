@@ -6543,9 +6543,13 @@ describe('"use cache" runtime', () => {
     setCacheHandler(new MemoryCacheHandler());
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
+      const { addCollectedRequestTags, getCollectedFetchTags } =
+        await import("../packages/vinext/src/shims/fetch-cache.js");
       let callCount = 0;
       const cached = registerCachedFunction(async () => {
         cacheLife({ revalidate: 1, expire: 60 });
+        // What a tagged fetch inside the function records.
+        addCollectedRequestTags([`fetch-tag-${callCount + 1}`]);
         return ++callCount;
       }, "test:stale-background");
       const waitUntil: Promise<unknown>[] = [];
@@ -6555,16 +6559,20 @@ describe('"use cache" runtime', () => {
             unstableCacheRevalidation: "background",
             executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
           }),
-          () => cached(),
+          async () => {
+            const value = await cached();
+            await Promise.all(waitUntil);
+            return { tags: getCollectedFetchTags(), value };
+          },
         );
 
-      await expect(request()).resolves.toBe(1);
+      await expect(request()).resolves.toEqual({ tags: ["fetch-tag-1"], value: 1 });
       vi.advanceTimersByTime(1_500);
-      await expect(request()).resolves.toBe(1);
+      // The background regeneration's fetch tags stay out of the stale response.
+      await expect(request()).resolves.toEqual({ tags: [], value: 1 });
       expect(waitUntil).toHaveLength(1);
-      await Promise.all(waitUntil);
       expect(callCount).toBe(2);
-      await expect(request()).resolves.toBe(2);
+      await expect(request()).resolves.toEqual({ tags: [], value: 2 });
     } finally {
       vi.useRealTimers();
     }
