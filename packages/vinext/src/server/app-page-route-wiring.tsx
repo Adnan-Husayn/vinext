@@ -1364,6 +1364,9 @@ export function buildAppPageElements<
         // layouts keep their state, matching Next.js segment ownership.
         slotElement = <Fragment key={slotResetKey}>{slotElement}</Fragment>;
       }
+      // Next.js gives each slot segment its own RedirectBoundary, so a slot
+      // page's redirect() keeps the route's layouts mounted.
+      slotElement = <RedirectBoundary resetKey={slotResetKey}>{slotElement}</RedirectBoundary>;
     }
     const branchLayouts = new Map<
       number,
