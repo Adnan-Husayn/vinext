@@ -39,19 +39,33 @@ function withResolvedIdProxy(resolvedId: string): string {
     : resolvedId;
 }
 
-function generateClientReferenceObject(meta: RscClientReferenceMeta): string {
+type ClientReferenceGroupSlot = { groupId: string; index: number };
+
+function sortedRenderedExports(meta: RscClientReferenceMeta): string[] {
+  return meta.renderedExports.slice().sort();
+}
+
+function groupExportName(slotIndex: number, exportIndex: number): string {
+  return `r${slotIndex}_${exportIndex}`;
+}
+
+function generateClientReferenceObject(
+  meta: RscClientReferenceMeta,
+  slot: ClientReferenceGroupSlot | undefined,
+): string {
   // Keep exports lazy. In async or cyclic client module evaluation, eagerly
   // copying module namespace values can observe an uninitialized binding.
-  const exports = meta.renderedExports
-    .slice()
-    .sort()
-    .map((name) => `      get ${JSON.stringify(name)}() { return m[${JSON.stringify(name)}]; },`)
+  const exports = sortedRenderedExports(meta)
+    .map((name, exportIndex) => {
+      const value = slot
+        ? `m.${groupExportName(slot.index, exportIndex)}`
+        : `m[${JSON.stringify(name)}]`;
+      return `      get ${JSON.stringify(name)}() { return ${value}; },`;
+    })
     .join("\n");
 
   return exports ? `{\n${exports}\n    }` : "{}";
 }
-
-type ClientReferenceGroupSlot = { groupId: string; index: number };
 
 function generateClientReferenceLoaders(
   metas: RscClientReferenceMeta[],
@@ -62,16 +76,11 @@ function generateClientReferenceLoaders(
     .sort((a, b) => a.referenceKey.localeCompare(b.referenceKey))
     .map((meta) => {
       const slot = slots.get(meta);
-      // Grouped references import their route group and read their own module
-      // namespace from it. The namespace object exists once the group module is
-      // linked, so the lazy getters below stay safe under async evaluation.
-      const load = slot
-        ? `(await import(${JSON.stringify(slot.groupId)})).r${slot.index}`
-        : `await import(${JSON.stringify(withResolvedIdProxy(meta.importId))})`;
+      const source = slot ? slot.groupId : withResolvedIdProxy(meta.importId);
       return [
         `  ${JSON.stringify(meta.referenceKey)}: async () => {`,
-        `    const m = ${load};`,
-        `    return ${generateClientReferenceObject(meta)};`,
+        `    const m = await import(${JSON.stringify(source)});`,
+        `    return ${generateClientReferenceObject(meta, slot)};`,
         `  },`,
       ].join("\n");
     })
@@ -80,12 +89,23 @@ function generateClientReferenceLoaders(
   return `export default {\n${entries}\n};\n`;
 }
 
+/**
+ * Re-export only each member's rendered exports, as live bindings, so unused
+ * exports and their dependencies still tree-shake as they do with direct
+ * loaders. A member without rendered exports is imported for its side effects.
+ */
 function generateClientReferenceGroupModule(metas: readonly RscClientReferenceMeta[]): string {
-  const imports = metas.map(
-    (meta, index) =>
-      `import * as r${index} from ${JSON.stringify(withResolvedIdProxy(meta.importId))};`,
-  );
-  return `${imports.join("\n")}\nexport { ${metas.map((_, index) => `r${index}`).join(", ")} };\n`;
+  const lines = metas.map((meta, slotIndex) => {
+    const source = JSON.stringify(withResolvedIdProxy(meta.importId));
+    const specifiers = sortedRenderedExports(meta).map((name, exportIndex) => {
+      const imported = /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
+      return `${imported} as ${groupExportName(slotIndex, exportIndex)}`;
+    });
+    return specifiers.length > 0
+      ? `export { ${specifiers.join(", ")} } from ${source};`
+      : `import ${source};`;
+  });
+  return `${lines.join("\n")}\n`;
 }
 
 /**
