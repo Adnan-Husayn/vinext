@@ -1,4 +1,4 @@
-import { isCSSRequest, type Plugin } from "vite";
+import { isCSSRequest, type Plugin, type Rollup } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
 import {
   CLIENT_REFERENCE_GROUP_MAX_COST_BYTES,
@@ -6,6 +6,7 @@ import {
   measureClientReferenceGroupCosts,
   planClientReferenceGroups,
 } from "../build/client-reference-groups.js";
+import { hasUserClientChunkGroups } from "../build/client-build-config.js";
 import type { AppRoute } from "../routing/app-route-graph.js";
 
 const CLIENT_REFERENCES_ID = "\0virtual:vite-rsc/client-references";
@@ -20,14 +21,16 @@ type RscPluginWithApi = Plugin & {
 };
 
 export type RscClientReferenceGroupingOptions = {
+  /** Maps route file paths to the module ids used by the RSC module graph. */
+  canonicalizeModuleId: (id: string) => string;
   /** App Router routes of the current build, or null outside App Router builds. */
   getRoutes: () => readonly AppRoute[] | null;
   /** Route-independent roots such as global-error and global-not-found. */
   getSharedRoots: () => readonly string[];
-  /** False when the user configured their own client chunk groups. */
-  isEnabled: () => boolean;
   /** Modules that live in chunks every page loads anyway (React, vinext runtime). */
   isAlwaysLoadedClientModule: (id: string) => boolean;
+  /** vinext's own client chunk groups. Any other chunk group disables grouping. */
+  ownClientChunkGroups: ReadonlySet<unknown>;
 };
 
 function withResolvedIdProxy(resolvedId: string): string {
@@ -85,20 +88,6 @@ function generateClientReferenceGroupModule(metas: readonly RscClientReferenceMe
   return `${imports.join("\n")}\nexport { ${metas.map((_, index) => `r${index}`).join(", ")} };\n`;
 }
 
-function hasGroupableSignature(
-  metaEntries: readonly [string, RscClientReferenceMeta][],
-  routeSignatures: ReadonlyMap<string, string>,
-): boolean {
-  const seen = new Set<string>();
-  for (const [referenceId] of metaEntries) {
-    const signature = routeSignatures.get(referenceId);
-    if (signature === undefined) continue;
-    if (seen.has(signature)) return true;
-    seen.add(signature);
-  }
-  return false;
-}
-
 /**
  * Replaces @vitejs/plugin-rsc's client-reference facades with per-reference
  * loaders. With `grouping`, production client builds additionally load
@@ -110,6 +99,7 @@ export function createRscClientReferenceLoadersPlugin(
   grouping?: RscClientReferenceGroupingOptions,
 ): Plugin {
   let rscApi: PluginApi | undefined;
+  let groupingEnabled = false;
   // Client reference id -> signature of the routes that reach it, collected
   // from the RSC graph, which @vitejs/plugin-rsc builds before the client.
   let routeSignatures = new Map<string, string>();
@@ -124,19 +114,23 @@ export function createRscClientReferenceLoadersPlugin(
           | RscPluginWithApi
           | undefined
       )?.api;
+      groupingEnabled =
+        !!grouping &&
+        !hasUserClientChunkGroups(config.environments.client?.build, grouping.ownClientChunkGroups);
     },
     buildStart() {
       if (this.environment.name === "rsc") routeSignatures = new Map();
       if (this.environment.name === "client") groupModules.clear();
     },
     buildEnd(error) {
-      if (error || !grouping || this.environment.name !== "rsc") return;
-      if (this.environment.mode !== "build" || !grouping.isEnabled()) return;
+      if (error || !grouping || !groupingEnabled) return;
+      if (this.environment.name !== "rsc" || this.environment.mode !== "build") return;
       const manager = rscApi?.manager;
       const routes = grouping.getRoutes();
       if (!manager || manager.isScanBuild || !routes) return;
 
       routeSignatures = collectClientReferenceRouteSignatures({
+        canonicalizeModuleId: grouping.canonicalizeModuleId,
         clientReferenceIds: new Set(Object.keys(manager.clientReferenceMetaMap)),
         getModuleInfo: (id) => this.getModuleInfo(id),
         routes,
@@ -177,15 +171,24 @@ export function createRscClientReferenceLoadersPlugin(
       }
 
       const slots = new Map<RscClientReferenceMeta, ClientReferenceGroupSlot>();
+      const referenceIds = new Set(metaEntries.map(([referenceId]) => referenceId));
       if (
-        grouping?.isEnabled() &&
+        grouping &&
+        groupingEnabled &&
         this.environment.name === "client" &&
         this.environment.mode === "build" &&
-        hasGroupableSignature(metaEntries, routeSignatures)
+        // Skip measuring when no two references share a signature.
+        planClientReferenceGroups({
+          referenceIds,
+          signatures: routeSignatures,
+          costs: new Map([...referenceIds].map((referenceId) => [referenceId, 0])),
+          maxCostBytes: 0,
+        }).length > 0
       ) {
         // Reference ids come from the RSC graph; resolve each import id in this
         // environment so packages are measured through their browser entry.
         const references = new Map<string, string>();
+        const resolvedReferences = new Map<string, Rollup.ResolvedId>();
         await Promise.all(
           metaEntries.map(async ([referenceId, meta]) => {
             if (meta.importId.startsWith("\0")) {
@@ -193,7 +196,9 @@ export function createRscClientReferenceLoadersPlugin(
               return;
             }
             const resolved = await this.resolve(meta.importId);
-            if (resolved && !resolved.external) references.set(referenceId, resolved.id);
+            if (!resolved || resolved.external) return;
+            references.set(referenceId, resolved.id);
+            resolvedReferences.set(resolved.id, resolved);
           }),
         );
         // Measure every reference, not just grouping candidates, so code shared
@@ -201,7 +206,9 @@ export function createRscClientReferenceLoadersPlugin(
         const costs = await measureClientReferenceGroupCosts({
           references,
           loadModule: async (moduleId) => {
-            const info = await this.load({ id: moduleId });
+            // Pass the full resolution so package metadata such as
+            // `sideEffects` is kept for modules this loads first.
+            const info = await this.load(resolvedReferences.get(moduleId) ?? { id: moduleId });
             return { code: info.code, importedIds: info.importedIds };
           },
           isExcluded: (moduleId) =>
@@ -211,7 +218,7 @@ export function createRscClientReferenceLoadersPlugin(
             grouping.isAlwaysLoadedClientModule(moduleId),
         });
         const groups = planClientReferenceGroups({
-          referenceIds: metaEntries.map(([referenceId]) => referenceId),
+          referenceIds,
           signatures: routeSignatures,
           costs,
           maxCostBytes: CLIENT_REFERENCE_GROUP_MAX_COST_BYTES,

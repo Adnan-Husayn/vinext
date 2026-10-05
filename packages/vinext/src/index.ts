@@ -290,7 +290,6 @@ import {
   createRscFrameworkChunkOutputConfig,
   getClientTreeshakeConfig,
   getBuildBundlerOptions,
-  hasUserClientChunkGroups,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
 import {
@@ -1737,7 +1736,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   let clientReferenceGroupRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
-  let hasUserClientChunkGroupsConfig = false;
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -2522,7 +2520,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
-        hasUserClientChunkGroupsConfig = hasUserClientChunkGroups(config);
         root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
         const devCliLifecycleEnabled =
           env.command === "serve" &&
@@ -8452,6 +8449,7 @@ export const loadServerActionClient = ${
         onComplete() {
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
+          clientReferenceGroupRoutes = null;
         },
       }),
     );
@@ -8461,13 +8459,17 @@ export const loadServerActionClient = ${
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(
       createRscClientReferenceLoadersPlugin({
+        canonicalizeModuleId: canonicalize,
         getRoutes: () => clientReferenceGroupRoutes,
         getSharedRoots: () => rscActionOwnerSharedRoots,
-        isEnabled: () => !hasUserClientChunkGroupsConfig,
         isAlwaysLoadedClientModule(id) {
           const chunkName = appClientManualChunks(id);
           return chunkName === "framework" || chunkName === "vinext";
         },
+        ownClientChunkGroups: new Set([
+          ...appClientCodeSplittingConfig.groups,
+          ...clientCodeSplittingConfig.groups,
+        ]),
       }),
     );
   } else if (manualUseCachePluginPromise) {

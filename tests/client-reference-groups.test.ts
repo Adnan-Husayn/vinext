@@ -43,16 +43,24 @@ function loader(modules: Record<string, { bytes: number; imports?: string[] }>) 
 }
 
 describe("collectClientReferenceRouteSignatures", () => {
-  it("signs references by the routes that reach them", () => {
+  it("signs references by the routes that reach them, except dynamic import targets", () => {
     const signatures = collectClientReferenceRouteSignatures({
-      clientReferenceIds: new Set(["/nav.tsx", "/theme.tsx", "/chart.tsx", "/lazy.tsx", "/orphan"]),
+      clientReferenceIds: new Set([
+        "/nav.tsx",
+        "/theme.tsx",
+        "/chart.tsx",
+        "/lazy.tsx",
+        "/lazy-panel.tsx",
+        "/orphan",
+      ]),
       getModuleInfo: moduleInfo(
         {
           "/app/layout.tsx": ["/header.tsx", "/theme.tsx"],
           "/header.tsx": ["/nav.tsx"],
           "/app/page.tsx": ["/chart.tsx"],
+          "/about/lazy-section.tsx": ["/lazy-panel.tsx"],
         },
-        { "/app/about/page.tsx": ["/lazy.tsx"] },
+        { "/app/about/page.tsx": ["/lazy.tsx", "/about/lazy-section.tsx"] },
       ),
       routes: [
         route("/", "/app/page.tsx", ["/app/layout.tsx"]),
@@ -64,23 +72,66 @@ describe("collectClientReferenceRouteSignatures", () => {
       "/nav.tsx": "/\n/about",
       "/theme.tsx": "/\n/about",
       "/chart.tsx": "/",
-      "/lazy.tsx": "/about",
+      "/lazy-panel.tsx": "/about",
     });
   });
 
-  it("gives references reached from shared roots their own owner", () => {
+  it("gives each shared root its own owner", () => {
     const signatures = collectClientReferenceRouteSignatures({
-      clientReferenceIds: new Set(["/retry.tsx", "/nav.tsx"]),
+      clientReferenceIds: new Set(["/retry.tsx", "/search.tsx", "/nav.tsx"]),
       getModuleInfo: moduleInfo({
         "/app/global-error.tsx": ["/retry.tsx", "/nav.tsx"],
+        "/app/global-not-found.tsx": ["/search.tsx"],
         "/app/page.tsx": ["/nav.tsx"],
       }),
       routes: [route("/", "/app/page.tsx")],
-      sharedRoots: ["/app/global-error.tsx"],
+      sharedRoots: ["/app/global-error.tsx", "/app/global-not-found.tsx"],
     });
 
-    expect(signatures.get("/retry.tsx")).toBe("*");
-    expect(signatures.get("/nav.tsx")).toBe("*\n/");
+    expect(Object.fromEntries(signatures)).toEqual({
+      "/nav.tsx": "/\nshared:/app/global-error.tsx",
+      "/retry.tsx": "shared:/app/global-error.tsx",
+      "/search.tsx": "shared:/app/global-not-found.tsx",
+    });
+  });
+
+  it("gives intercepting routes their own owner", () => {
+    const intercept = {
+      convention: ".",
+      layoutPaths: [],
+      notFoundPath: null,
+      pagePath: "/app/@modal/(.)photo/page.tsx",
+      sourceMatchPattern: "/photos",
+      targetPattern: "/photo",
+    };
+    const photos = {
+      ...route("/photos", "/app/photos/page.tsx"),
+      siblingIntercepts: [intercept],
+    };
+    const signatures = collectClientReferenceRouteSignatures({
+      clientReferenceIds: new Set(["/grid.tsx", "/modal.tsx"]),
+      getModuleInfo: moduleInfo({
+        "/app/photos/page.tsx": ["/grid.tsx"],
+        "/app/@modal/(.)photo/page.tsx": ["/modal.tsx"],
+      }),
+      routes: [photos as never],
+    });
+
+    expect(Object.fromEntries(signatures)).toEqual({
+      "/grid.tsx": "/photos",
+      "/modal.tsx": "intercept:/app/@modal/(.)photo/page.tsx",
+    });
+  });
+
+  it("canonicalizes route roots before walking the module graph", () => {
+    const signatures = collectClientReferenceRouteSignatures({
+      canonicalizeModuleId: (id) => id.replace("/var/", "/private/var/"),
+      clientReferenceIds: new Set(["/nav.tsx"]),
+      getModuleInfo: moduleInfo({ "/private/var/app/page.tsx": ["/nav.tsx"] }),
+      routes: [route("/", "/var/app/page.tsx")],
+    });
+
+    expect(signatures.get("/nav.tsx")).toBe("/");
   });
 
   it("does not walk through client references", () => {
@@ -172,14 +223,15 @@ describe("planClientReferenceGroups", () => {
 
   it("groups references that share a signature and stay under the cost cap", () => {
     const groups = planClientReferenceGroups({
-      referenceIds: [...signatures.keys(), "/unsigned.tsx"],
+      referenceIds: new Set([...signatures.keys(), "/unsigned.tsx"]),
       signatures,
       costs,
       maxCostBytes: 100,
     });
 
+    // Members keep signature (route walk) order.
     expect(groups.map((group) => group.referenceIds)).toEqual([
-      ["/a.tsx", "/b.tsx"],
+      ["/b.tsx", "/a.tsx"],
       ["/x.tsx", "/y.tsx"],
     ]);
     for (const group of groups) expect(group.key).toMatch(/^[0-9a-f]{10}$/);
@@ -188,7 +240,7 @@ describe("planClientReferenceGroups", () => {
   it("derives stable keys from the signature", () => {
     const plan = () =>
       planClientReferenceGroups({
-        referenceIds: [...signatures.keys()].reverse(),
+        referenceIds: new Set([...signatures.keys()].reverse()),
         signatures,
         costs,
         maxCostBytes: 100,
@@ -200,45 +252,44 @@ describe("planClientReferenceGroups", () => {
 });
 
 describe("hasUserClientChunkGroups", () => {
-  it("detects user chunk groups at the top level and on the client environment", () => {
-    expect(hasUserClientChunkGroups({})).toBe(false);
+  const ownGroup = { name: () => null };
+  const own = new Set<unknown>([ownGroup]);
+
+  it("ignores vinext's own groups and code splitting options without groups", () => {
+    expect(hasUserClientChunkGroups(undefined, own)).toBe(false);
     expect(
-      hasUserClientChunkGroups({
-        build: { rolldownOptions: { output: { codeSplitting: { groups: [{ name: "vendor" }] } } } },
-      }),
-    ).toBe(true);
+      hasUserClientChunkGroups(
+        { rolldownOptions: { output: { codeSplitting: { minSize: 10_000, groups: [ownGroup] } } } },
+        own,
+      ),
+    ).toBe(false);
     expect(
-      hasUserClientChunkGroups({
-        environments: {
-          client: {
-            build: { rolldownOptions: { output: [{ manualChunks: () => undefined }] } },
-          },
-        },
-      }),
-    ).toBe(true);
-    expect(
-      hasUserClientChunkGroups({
-        build: { rollupOptions: { output: { advancedChunks: { groups: [{ name: "x" }] } } } },
-      }),
-    ).toBe(true);
+      hasUserClientChunkGroups({ rolldownOptions: { output: { codeSplitting: true } } }, own),
+    ).toBe(false);
   });
 
-  it("ignores code splitting options without groups", () => {
+  it("detects any other chunk group or manualChunks", () => {
     expect(
-      hasUserClientChunkGroups({
-        build: {
+      hasUserClientChunkGroups(
+        {
           rolldownOptions: {
-            output: {
-              codeSplitting: { experimentalInlineCommonChunks: { maxSize: 10_240 } },
-            },
+            output: { codeSplitting: { groups: [ownGroup, { name: "vendor" }] } },
           },
         },
-      } as never),
-    ).toBe(false);
+        own,
+      ),
+    ).toBe(true);
     expect(
-      hasUserClientChunkGroups({
-        build: { rolldownOptions: { output: { codeSplitting: { groups: [] } } } },
-      }),
-    ).toBe(false);
+      hasUserClientChunkGroups(
+        { rolldownOptions: { output: [{ manualChunks: () => undefined }] } },
+        own,
+      ),
+    ).toBe(true);
+    expect(
+      hasUserClientChunkGroups(
+        { rollupOptions: { output: { advancedChunks: { groups: [{ name: "x" }] } } } },
+        own,
+      ),
+    ).toBe(true);
   });
 });

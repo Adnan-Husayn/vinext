@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Rollup } from "vite";
-import { actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
+import { actionOwnerInterceptEntryIds, actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
 
 /**
  * Client references whose estimated group cost (see
@@ -16,23 +16,52 @@ type ClientReferenceGroupRoute = Parameters<typeof actionOwnerRouteEntryIds>[0];
 
 type ModuleGraphInfo = Pick<Rollup.ModuleInfo, "dynamicallyImportedIds" | "importedIds">;
 
-const SHARED_ROOTS_OWNER = "*";
+/**
+ * The owners that can reach a route's client references, with their roots.
+ * Intercepting routes only render on soft navigation, so each one is its own
+ * owner rather than part of the route whose slot contains it.
+ */
+function routeOwners(route: ClientReferenceGroupRoute): [owner: string, roots: string[]][] {
+  const intercepts = [
+    ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
+    ...route.siblingIntercepts,
+  ];
+  const routeRoots = actionOwnerRouteEntryIds({
+    ...route,
+    parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
+    siblingIntercepts: [],
+  });
+  return [
+    [route.pattern, routeRoots],
+    ...intercepts.map((intercept): [string, string[]] => [
+      `intercept:${intercept.pagePath}`,
+      actionOwnerInterceptEntryIds(intercept),
+    ]),
+  ];
+}
 
 /**
  * Map each client reference reachable from App Router route modules to a
- * signature naming the routes that reach it. References with the same
- * signature are always needed by the same set of routes, mirroring Next.js'
- * per-route client entries.
+ * signature naming the owners that reach it: routes, intercepting routes, and
+ * each shared root (global-error, global-not-found) on its own. References
+ * with the same signature are always needed together, mirroring Next.js'
+ * per-route client entries. The map is in the order the walk first reaches
+ * each reference, which follows source import order.
  *
  * References reachable from no route module (for example vinext's internal
- * runtime references) are omitted and keep their own lazy chunk.
+ * runtime references) are omitted and keep their own lazy chunk. So are
+ * references that route code imports dynamically (`next/dynamic`,
+ * `React.lazy`): their preloads are looked up by their own module id among the
+ * client build's dynamic imports, which grouping would replace with the group.
  */
 export function collectClientReferenceRouteSignatures(options: {
+  canonicalizeModuleId?: (id: string) => string;
   clientReferenceIds: ReadonlySet<string>;
   getModuleInfo: (id: string) => ModuleGraphInfo | null;
   routes: readonly ClientReferenceGroupRoute[];
   sharedRoots?: readonly string[];
 }): Map<string, string> {
+  const canonicalize = options.canonicalizeModuleId ?? ((id: string) => id);
   const moduleInfoCache = new Map<string, ModuleGraphInfo | null>();
   const getModuleInfo = (id: string) => {
     let info = moduleInfoCache.get(id);
@@ -45,6 +74,7 @@ export function collectClientReferenceRouteSignatures(options: {
 
   // Layouts and boundaries are shared by many routes, so walk each route
   // module's graph once and reuse it for every route that includes it.
+  const dynamicallyImportedReferences = new Set<string>();
   const referencesByRoot = new Map<string, Set<string>>();
   const referencesReachedFrom = (root: string) => {
     let references = referencesByRoot.get(root);
@@ -63,7 +93,12 @@ export function collectClientReferenceRouteSignatures(options: {
       const info = getModuleInfo(id);
       if (!info) continue;
       for (const importedId of info.importedIds) queue.push(importedId);
-      for (const importedId of info.dynamicallyImportedIds) queue.push(importedId);
+      for (const importedId of info.dynamicallyImportedIds) {
+        if (options.clientReferenceIds.has(importedId)) {
+          dynamicallyImportedReferences.add(importedId);
+        }
+        queue.push(importedId);
+      }
     }
     referencesByRoot.set(root, references);
     return references;
@@ -72,7 +107,7 @@ export function collectClientReferenceRouteSignatures(options: {
   const owners = new Map<string, Set<string>>();
   const addOwner = (owner: string, roots: readonly string[]) => {
     for (const root of roots) {
-      for (const reference of referencesReachedFrom(root)) {
+      for (const reference of referencesReachedFrom(canonicalize(root))) {
         let referenceOwners = owners.get(reference);
         if (!referenceOwners) {
           referenceOwners = new Set();
@@ -83,12 +118,13 @@ export function collectClientReferenceRouteSignatures(options: {
     }
   };
   for (const route of options.routes) {
-    addOwner(route.pattern, actionOwnerRouteEntryIds(route));
+    for (const [owner, roots] of routeOwners(route)) addOwner(owner, roots);
   }
-  if (options.sharedRoots?.length) addOwner(SHARED_ROOTS_OWNER, options.sharedRoots);
+  for (const root of options.sharedRoots ?? []) addOwner(`shared:${root}`, [root]);
 
   const signatures = new Map<string, string>();
   for (const [reference, referenceOwners] of owners) {
+    if (dynamicallyImportedReferences.has(reference)) continue;
     signatures.set(reference, [...referenceOwners].sort().join("\n"));
   }
   return signatures;
@@ -208,7 +244,10 @@ export async function measureClientReferenceGroupCosts(options: {
 export type ClientReferenceGroup = {
   /** Stable, filename-safe identifier derived from the route signature. */
   key: string;
-  /** Member client reference ids, sorted. */
+  /**
+   * Member client reference ids in signature (route walk) order, which sets
+   * module evaluation and CSS order inside the group chunk.
+   */
   referenceIds: string[];
 };
 
@@ -218,15 +257,14 @@ export type ClientReferenceGroup = {
  * signatures with a single member stay ungrouped.
  */
 export function planClientReferenceGroups(options: {
-  referenceIds: readonly string[];
+  referenceIds: ReadonlySet<string>;
   signatures: ReadonlyMap<string, string>;
   costs: ReadonlyMap<string, number | null>;
   maxCostBytes: number;
 }): ClientReferenceGroup[] {
   const membersBySignature = new Map<string, string[]>();
-  for (const referenceId of options.referenceIds) {
-    const signature = options.signatures.get(referenceId);
-    if (signature === undefined) continue;
+  for (const [referenceId, signature] of options.signatures) {
+    if (!options.referenceIds.has(referenceId)) continue;
     const cost = options.costs.get(referenceId);
     if (cost == null || cost > options.maxCostBytes) continue;
     let members = membersBySignature.get(signature);
@@ -247,7 +285,7 @@ export function planClientReferenceGroups(options: {
     while (usedKeys.has(hash.slice(0, length))) length++;
     const key = hash.slice(0, length);
     usedKeys.add(key);
-    groups.push({ key, referenceIds: members.sort() });
+    groups.push({ key, referenceIds: members });
   }
   return groups;
 }
