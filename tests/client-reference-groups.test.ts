@@ -43,7 +43,7 @@ function loader(modules: Record<string, { bytes: number; imports?: string[] }>) 
 }
 
 describe("collectClientReferenceRouteSignatures", () => {
-  it("signs references by the routes that reach them, except dynamic import targets", () => {
+  it("signs references by the routes that reach them, except below dynamic imports", () => {
     const signatures = collectClientReferenceRouteSignatures({
       clientReferenceIds: new Set([
         "/nav.tsx",
@@ -72,8 +72,20 @@ describe("collectClientReferenceRouteSignatures", () => {
       "/nav.tsx": "/\n/about",
       "/theme.tsx": "/\n/about",
       "/chart.tsx": "/",
-      "/lazy-panel.tsx": "/about",
     });
+  });
+
+  it("orders references by module evaluation order", () => {
+    const signatures = collectClientReferenceRouteSignatures({
+      clientReferenceIds: new Set(["/a.tsx", "/b.tsx", "/c.tsx"]),
+      getModuleInfo: moduleInfo({
+        "/app/page.tsx": ["/helper.ts", "/a.tsx", "/c.tsx"],
+        "/helper.ts": ["/b.tsx", "/c.tsx"],
+      }),
+      routes: [route("/", "/app/page.tsx")],
+    });
+
+    expect([...signatures.keys()]).toEqual(["/b.tsx", "/c.tsx", "/a.tsx"]);
   });
 
   it("gives each shared root its own owner", () => {
@@ -182,6 +194,16 @@ describe("measureClientReferenceGroupCosts", () => {
     });
 
     expect(Object.fromEntries(costs)).toEqual({ box: 5060, code: 5050 });
+  });
+
+  it("measures UTF-8 bytes", async () => {
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([["a", "/a.tsx"]]),
+      loadModule: async () => ({ code: "é".repeat(10), importedIds: [] }),
+      isExcluded: () => false,
+    });
+
+    expect(costs.get("a")).toBe(20);
   });
 
   it("skips excluded modules and reports unloadable graphs as unknown", async () => {

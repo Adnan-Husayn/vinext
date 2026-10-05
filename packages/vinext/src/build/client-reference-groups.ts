@@ -46,13 +46,12 @@ function routeOwners(route: ClientReferenceGroupRoute): [owner: string, roots: s
  * each shared root (global-error, global-not-found) on its own. References
  * with the same signature are always needed together, mirroring Next.js'
  * per-route client entries. The map is in the order the walk first reaches
- * each reference, which follows source import order.
+ * each reference, which follows ES module evaluation order.
  *
  * References reachable from no route module (for example vinext's internal
  * runtime references) are omitted and keep their own lazy chunk. So are
- * references that route code imports dynamically (`next/dynamic`,
- * `React.lazy`): their preloads are looked up by their own module id among the
- * client build's dynamic imports, which grouping would replace with the group.
+ * references that route code reaches through a dynamic import (`next/dynamic`,
+ * `React.lazy`), directly or through the dynamically imported module's graph.
  */
 export function collectClientReferenceRouteSignatures(options: {
   canonicalizeModuleId?: (id: string) => string;
@@ -72,18 +71,39 @@ export function collectClientReferenceRouteSignatures(options: {
     return info;
   };
 
+  // Client references below a dynamic import (`next/dynamic`, `React.lazy`)
+  // load lazily. Grouping would make them eager, and their preloads are looked
+  // up by their own module id among the client build's dynamic imports.
+  const lazyReferences = new Set<string>();
+  const lazyVisited = new Set<string>();
+  const markLazy = (root: string) => {
+    const stack = [root];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (lazyVisited.has(id)) continue;
+      lazyVisited.add(id);
+      if (options.clientReferenceIds.has(id)) {
+        lazyReferences.add(id);
+        continue;
+      }
+      const info = getModuleInfo(id);
+      if (info) stack.push(...info.importedIds, ...info.dynamicallyImportedIds);
+    }
+  };
+
   // Layouts and boundaries are shared by many routes, so walk each route
-  // module's graph once and reuse it for every route that includes it.
-  const dynamicallyImportedReferences = new Set<string>();
+  // module's graph once and reuse it for every route that includes it. The
+  // walk is depth-first in import order, so references are recorded in the
+  // order ES module evaluation reaches them.
   const referencesByRoot = new Map<string, Set<string>>();
   const referencesReachedFrom = (root: string) => {
     let references = referencesByRoot.get(root);
     if (references) return references;
     references = new Set();
     const visited = new Set<string>();
-    const queue = [root];
-    for (let index = 0; index < queue.length; index++) {
-      const id = queue[index]!;
+    const stack = [root];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
       if (visited.has(id)) continue;
       visited.add(id);
       if (options.clientReferenceIds.has(id)) {
@@ -92,12 +112,9 @@ export function collectClientReferenceRouteSignatures(options: {
       }
       const info = getModuleInfo(id);
       if (!info) continue;
-      for (const importedId of info.importedIds) queue.push(importedId);
-      for (const importedId of info.dynamicallyImportedIds) {
-        if (options.clientReferenceIds.has(importedId)) {
-          dynamicallyImportedReferences.add(importedId);
-        }
-        queue.push(importedId);
+      for (const importedId of info.dynamicallyImportedIds) markLazy(importedId);
+      for (let index = info.importedIds.length - 1; index >= 0; index--) {
+        stack.push(info.importedIds[index]!);
       }
     }
     referencesByRoot.set(root, references);
@@ -124,7 +141,7 @@ export function collectClientReferenceRouteSignatures(options: {
 
   const signatures = new Map<string, string>();
   for (const [reference, referenceOwners] of owners) {
-    if (dynamicallyImportedReferences.has(reference)) continue;
+    if (lazyReferences.has(reference)) continue;
     signatures.set(reference, [...referenceOwners].sort().join("\n"));
   }
   return signatures;
@@ -184,7 +201,10 @@ export async function measureClientReferenceGroupCosts(options: {
             ownModules.set(referenceId, null);
             return;
           }
-          moduleBytes.set(frontier[index]!, module.code?.length ?? 0);
+          moduleBytes.set(
+            frontier[index]!,
+            module.code ? Buffer.byteLength(module.code, "utf8") : 0,
+          );
           for (const importedId of module.importedIds) {
             if (own.has(importedId) || options.isExcluded(importedId)) continue;
             const importedReference = referenceByModuleId.get(importedId);
