@@ -6530,6 +6530,75 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  // Next.js serves a stale "use cache" entry during a dynamic render and regenerates it in
+  // the background, but regenerates it first during static generation:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("serves a stale cached value and regenerates it in the background", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        return ++callCount;
+      }, "test:stale-background");
+      const waitUntil: Promise<unknown>[] = [];
+      const request = () =>
+        runWithRequestContext(
+          createRequestContext({
+            unstableCacheRevalidation: "background",
+            executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
+          }),
+          () => cached(),
+        );
+
+      await expect(request()).resolves.toBe(1);
+      vi.advanceTimersByTime(1_500);
+      await expect(request()).resolves.toBe(1);
+      expect(waitUntil).toHaveLength(1);
+      await Promise.all(waitUntil);
+      expect(callCount).toBe(2);
+      await expect(request()).resolves.toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("regenerates a stale cached value first outside a dynamic render", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        return ++callCount;
+      }, "test:stale-foreground");
+      const request = () =>
+        runWithRequestContext(
+          createRequestContext({ unstableCacheRevalidation: "foreground" }),
+          () => cached(),
+        );
+
+      await expect(request()).resolves.toBe(1);
+      vi.advanceTimersByTime(1_500);
+      await expect(request()).resolves.toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
   it("varies shared cache entries by root params read by the cached function", async () => {
