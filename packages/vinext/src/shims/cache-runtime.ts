@@ -39,7 +39,7 @@ import {
   _hasPendingRevalidatedTag,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
-  _runWithCacheState,
+  runWithDetachedCacheObservations,
   shouldServeStaleUnstableCacheEntry,
   type CacheLifeConfig,
 } from "./cache-request-state.js";
@@ -589,17 +589,24 @@ export type RegisterCachedFunctionOptions = {
 
 // Like Next.js, an entry past its `expire` is a miss: it is regenerated, never served. A
 // stale entry is served only by a dynamic render, which regenerates it in the background;
-// ISR regeneration and prerendering regenerate it first.
+// static generation (a prerender, a cacheability probe, an ISR regeneration) regenerates it
+// first. The request's revalidation mode is set before its prerender work unit, so check
+// the prerender conditions too.
 function isServableCacheState(cacheState: string | undefined): boolean {
   if (cacheState === "expired") return false;
-  return cacheState !== "stale" || shouldServeStaleUnstableCacheEntry();
+  if (cacheState !== "stale") return true;
+  return (
+    shouldServeStaleUnstableCacheEntry() &&
+    process.env.VINEXT_PRERENDER !== "1" &&
+    !isRouteCacheabilityProbe()
+  );
 }
 
 // Like Next.js, the background regeneration feeds neither its cache life nor its tags (its
 // own or its fetches') back into the request, or an enclosing cache, that served the stale
 // value.
 function regenerateInBackground(id: string, regenerate: () => Promise<unknown>): void {
-  const regeneration = _runWithCacheState(() =>
+  const regeneration = runWithDetachedCacheObservations(() =>
     runWithDetachedFetchObservations(() => cacheContextStorage.exit(regenerate)),
   ).then(
     () => undefined,

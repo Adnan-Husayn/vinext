@@ -6578,7 +6578,45 @@ describe('"use cache" runtime', () => {
     }
   });
 
-  it("regenerates a stale cached value first outside a dynamic render", async () => {
+  it.each([
+    // ISR regeneration runs with the foreground mode.
+    ["an ISR regeneration", "foreground", undefined],
+    // A prerender's request context is created in background mode before its work unit.
+    ["a prerender", "background", "1"],
+  ] as const)(
+    "regenerates a stale cached value first in %s",
+    async (_name, unstableCacheRevalidation, prerender) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+      setCacheHandler(new MemoryCacheHandler());
+      vi.useFakeTimers({ toFake: ["Date"] });
+      if (prerender) vi.stubEnv("VINEXT_PRERENDER", prerender);
+      try {
+        let callCount = 0;
+        const cached = registerCachedFunction(async () => {
+          cacheLife({ revalidate: 1, expire: 60 });
+          return ++callCount;
+        }, `test:stale-foreground-${unstableCacheRevalidation}`);
+        const request = () =>
+          runWithRequestContext(createRequestContext({ unstableCacheRevalidation }), () =>
+            cached(),
+          );
+
+        await expect(request()).resolves.toBe(1);
+        vi.advanceTimersByTime(1_500);
+        await expect(request()).resolves.toBe(2);
+      } finally {
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("serves stale nested values to a background regeneration", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { cacheLife, setCacheHandler, MemoryCacheHandler } =
@@ -6588,20 +6626,36 @@ describe('"use cache" runtime', () => {
     setCacheHandler(new MemoryCacheHandler());
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      let callCount = 0;
-      const cached = registerCachedFunction(async () => {
+      let innerCount = 0;
+      let outerCount = 0;
+      const inner = registerCachedFunction(async () => {
         cacheLife({ revalidate: 1, expire: 60 });
-        return ++callCount;
-      }, "test:stale-foreground");
+        return `inner-${++innerCount}`;
+      }, "test:stale-nested-inner");
+      const outer = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        return `outer-${++outerCount}:${await inner()}`;
+      }, "test:stale-nested-outer");
+      const waitUntil: Promise<unknown>[] = [];
       const request = () =>
         runWithRequestContext(
-          createRequestContext({ unstableCacheRevalidation: "foreground" }),
-          () => cached(),
+          createRequestContext({
+            unstableCacheRevalidation: "background",
+            executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
+          }),
+          () => outer(),
         );
 
-      await expect(request()).resolves.toBe(1);
+      await expect(request()).resolves.toBe("outer-1:inner-1");
       vi.advanceTimersByTime(1_500);
-      await expect(request()).resolves.toBe(2);
+      await expect(request()).resolves.toBe("outer-1:inner-1");
+      for (let settled = 0; settled < waitUntil.length; settled = waitUntil.length) {
+        await Promise.all(waitUntil);
+      }
+      // Like Next.js, the outer regeneration used the stale inner value while the inner
+      // value regenerated in its own background task.
+      expect(innerCount).toBe(2);
+      await expect(request()).resolves.toBe("outer-2:inner-1");
     } finally {
       vi.useRealTimers();
     }
