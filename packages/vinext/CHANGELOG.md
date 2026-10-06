@@ -1,5 +1,22 @@
 # vinext
 
+## 1.0.2
+
+### Bug Fixes
+
+- **Config:** pass the real defaultConfig to function-form next.config (#3687)
+- **CSS:** derive drafts.customMedia from lightningCssFeatures.include (#3681)
+- **Pages:** pass the original data URL as req.url in the Worker request stage (#3472)
+- **App Router:** leave streamed generated metadata out of loading-shell prefetches (#3705)
+- **Use Cache:** regenerate entries past their expire instead of serving them (#3703)
+- **Cjs:** drop the CommonJS export facade from ESM like Next.js (#3667)
+- **App Router:** share React cache() between generateMetadata and the page render (#3660)
+
+### Contributors
+
+- @AhmedElBanna80
+- @james-elicx
+
 ## 1.0.1
 
 ### Bug Fixes
