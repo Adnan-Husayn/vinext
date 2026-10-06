@@ -4370,6 +4370,7 @@ describe("production server compression", () => {
     expect(COMPRESSIBLE_TYPES.has("application/json")).toBe(true);
     expect(COMPRESSIBLE_TYPES.has("text/css")).toBe(true);
     expect(COMPRESSIBLE_TYPES.has("image/svg+xml")).toBe(true);
+    expect(COMPRESSIBLE_TYPES.has("text/x-component")).toBe(true);
     // Binary formats should not be compressible
     expect(COMPRESSIBLE_TYPES.has("image/png")).toBe(false);
     expect(COMPRESSIBLE_TYPES.has("image/jpeg")).toBe(false);
@@ -4848,6 +4849,31 @@ describe("Set-Cookie header preservation in prod-server", () => {
       expect(result.body).toContain("Delayed stream content loaded");
     });
   }
+
+  it("sendWebResponse compresses RSC responses", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    const payload = '0:["$","div",null,{"children":"' + "x".repeat(2000) + '"}]\n';
+    const response = new Response(payload, {
+      headers: { "content-type": "text/x-component" },
+    });
+    const req = {
+      method: "GET",
+      headers: { "accept-encoding": "gzip" },
+    };
+    const res = new CapturingNodeResponse();
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await finished(res);
+
+    const rawBody = Buffer.concat(chunks);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["Content-Encoding"]).toBe("gzip");
+    expect(String(res.headers["Vary"])).toContain("Accept-Encoding");
+    expect(rawBody.byteLength).toBeLessThan(Buffer.byteLength(payload));
+    expect(zlib.gunzipSync(rawBody).toString("utf8")).toBe(payload);
+  });
 
   it("sendWebResponse cancels streamed bodies for HEAD requests", async () => {
     const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");

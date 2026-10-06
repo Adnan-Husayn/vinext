@@ -303,6 +303,7 @@ const COMPRESSIBLE_TYPES = new Set([
   "text/plain",
   "text/xml",
   "text/javascript",
+  "text/x-component",
   "application/javascript",
   "application/json",
   "application/xml",
