@@ -878,8 +878,6 @@ async function tryServeStatic(
   const etag =
     (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
     `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
-  const isCompressible = compress && isCompressibleContentType(ct);
-
   const baseHeaders: Record<string, string | string[]> = {
     "Content-Type": ct,
     "Cache-Control": cacheControl,
@@ -889,7 +887,17 @@ async function tryServeStatic(
     ...extraHeaders,
   };
 
-  const encoding = isCompressible ? negotiateEncoding(req) : "identity";
+  const { varyAcceptEncoding: isCompressible, encoding } = resolveResponseCompression(
+    req,
+    compress,
+    {
+      contentType: ct,
+      cacheControl:
+        (extraHeaders && readHeaderCaseInsensitive(extraHeaders, "cache-control")) ?? cacheControl,
+      contentEncoding: extraHeaders && readHeaderCaseInsensitive(extraHeaders, "content-encoding"),
+      contentLength: resolved.size,
+    },
+  );
   const validators = extraHeaders
     ? resolveStaticValidators(etag, resolved.mtimeMs, extraHeaders)
     : undefined;
@@ -1376,6 +1384,7 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     port,
     host,
     clientDir,
+    serverDir,
     serverEntryPath,
     compress,
     purpose,
@@ -1986,6 +1995,7 @@ type PagesRouterServerOptions = {
   port: number;
   host: string;
   clientDir: string;
+  serverDir: string;
   serverEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
@@ -2031,6 +2041,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     port,
     host,
     clientDir,
+    serverDir,
     serverEntryPath,
     compress: compressOption,
     purpose,
@@ -2067,7 +2078,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const prerenderSecret = readPrerenderSecret(path.dirname(serverEntryPath));
 
   // next.config `compress: false` turns compression off, as in `next start`.
-  const compress = compressOption && readServerCompress(path.dirname(serverEntryPath));
+  const compress = compressOption && readServerCompress(serverDir);
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";

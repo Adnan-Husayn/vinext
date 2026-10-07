@@ -1119,8 +1119,9 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.body.length).toBe(0);
   });
 
-  it("slow path serves HEAD without body for compressed response", async () => {
-    await writeFile(clientDir, "_next/static/head-slow-comp-ccc333.js", "compress me");
+  it("slow path serves HEAD for a compressible file uncompressed, like Next.js", async () => {
+    const content = "compress me\n".repeat(200);
+    await writeFile(clientDir, "_next/static/head-slow-comp-ccc333.js", content);
 
     const req = mockReq("br", undefined, "HEAD");
     const { res, captured } = mockRes();
@@ -1136,8 +1137,43 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(served).toBe(true);
     expect(captured.status).toBe(200);
-    expect(captured.headers["Content-Encoding"]).toBe("br");
+    expect(captured.headers["Content-Encoding"]).toBeUndefined();
+    expect(captured.headers["Content-Length"]).toBe(String(Buffer.byteLength(content)));
+    expect(captured.headers["Vary"]).toBe("Accept-Encoding");
     expect(captured.body.length).toBe(0);
+  });
+
+  it("slow path applies Next.js's size threshold and no-transform rule", async () => {
+    await writeFile(clientDir, "small.ttf", Buffer.alloc(1023, 1));
+    await writeFile(clientDir, "large.ttf", Buffer.alloc(2048, 1));
+    const serve = async (pathname: string, extraHeaders?: Record<string, string>) => {
+      const { res, captured } = mockRes();
+      await tryServeStatic(
+        mockReq("gzip"),
+        res,
+        clientDir,
+        pathname,
+        true,
+        undefined,
+        extraHeaders,
+      );
+      await captured.ended;
+      return captured;
+    };
+
+    // font/ttf is compressible per mime-db.
+    const large = await serve("/large.ttf");
+    expect(large.headers["Content-Encoding"]).toBe("gzip");
+    expect(large.headers["Vary"]).toBe("Accept-Encoding");
+
+    const small = await serve("/small.ttf");
+    expect(small.headers["Content-Encoding"]).toBeUndefined();
+    expect(small.headers["Content-Length"]).toBe("1023");
+    expect(small.headers["Vary"]).toBe("Accept-Encoding");
+
+    const noTransform = await serve("/large.ttf", { "Cache-Control": "public, no-transform" });
+    expect(noTransform.headers["Content-Encoding"]).toBeUndefined();
+    expect(noTransform.headers["Vary"]).toBeUndefined();
   });
 
   it("serves Next-compatible MIME types over a real HTTP response", async () => {
