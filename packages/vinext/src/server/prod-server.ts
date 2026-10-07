@@ -98,6 +98,7 @@ import {
 } from "./accept-encoding.js";
 import {
   COMPRESS_THRESHOLD,
+  hasNoTransform,
   isCompressibleContentType,
   parseContentLengthHeader,
   resolveResponseCompression,
@@ -701,14 +702,23 @@ async function tryServeStatic(
     // NOTE: HAS_ZSTD is intentionally not checked here — we're serving a
     // pre-existing .zst file from disk, not calling zstdCompress() at runtime.
     // The HAS_ZSTD guard only matters for the slow-path's on-the-fly compression.
-    const rawAe = compress ? req.headers["accept-encoding"] : undefined;
+    // An effective `Cache-Control: no-transform` (configured headers first)
+    // forbids content codings, so it disables variant selection like
+    // compress=false does.
+    const encodingAllowed =
+      compress &&
+      !hasNoTransform(
+        (extraHeaders && readHeaderCaseInsensitive(extraHeaders, "cache-control")) ??
+          entry.original.headers["Cache-Control"],
+      );
+    const rawAe = encodingAllowed ? req.headers["accept-encoding"] : undefined;
     const parsed = typeof rawAe === "string" ? parseAcceptedEncodings(rawAe) : undefined;
     const availableVariants: Array<"zstd" | "br" | "gzip"> = [
       ...(entry.zst ? (["zstd"] as const) : []),
       ...(entry.br ? (["br"] as const) : []),
       ...(entry.gz ? (["gzip"] as const) : []),
     ];
-    const variesByEncoding = compress && availableVariants.length > 0;
+    const variesByEncoding = encodingAllowed && availableVariants.length > 0;
     const selected = parsed ? selectContentEncoding(parsed, availableVariants) : "identity";
     const variant =
       selected === "zstd"
@@ -721,10 +731,10 @@ async function tryServeStatic(
     // The cache adds `Vary: Accept-Encoding` to the identity and 304 headers
     // whenever a precompressed sidecar exists. With compression disabled no
     // representation varies by Accept-Encoding, so drop that token.
-    const notModifiedBaseHeaders = compress
+    const notModifiedBaseHeaders = encodingAllowed
       ? entry.notModifiedHeaders
       : omitVaryToken(entry.notModifiedHeaders, "Accept-Encoding");
-    const originalHeaders = compress
+    const originalHeaders = encodingAllowed
       ? entry.original.headers
       : omitVaryToken(entry.original.headers, "Accept-Encoding");
     const variantHeaders = variant === entry.original ? originalHeaders : variant.headers;

@@ -72,6 +72,11 @@ export function isCompressibleContentType(contentType: string | null | undefined
 
 const NO_TRANSFORM_REGEXP = /(?:^|,)\s*?no-transform\s*?(?:,|$)/;
 
+/** Whether a Cache-Control value forbids content codings (`no-transform`). */
+export function hasNoTransform(cacheControl: string | null | undefined): boolean {
+  return !!cacheControl && NO_TRANSFORM_REGEXP.test(cacheControl);
+}
+
 /** Responses whose known length is below this many bytes are sent uncompressed. */
 export const COMPRESS_THRESHOLD = 1024;
 
@@ -113,9 +118,7 @@ export function resolveResponseCompression(
 ): ResponseCompression {
   if (!compress) return NO_COMPRESSION;
   if (!isCompressibleContentType(headers.contentType)) return NO_COMPRESSION;
-  if (headers.cacheControl && NO_TRANSFORM_REGEXP.test(headers.cacheControl)) {
-    return NO_COMPRESSION;
-  }
+  if (hasNoTransform(headers.cacheControl)) return NO_COMPRESSION;
 
   const identity: ResponseCompression = { varyAcceptEncoding: true, encoding: "identity" };
   if (headers.contentLength !== undefined && headers.contentLength < COMPRESS_THRESHOLD) {

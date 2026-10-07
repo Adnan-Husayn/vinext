@@ -400,6 +400,37 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(configured.headers["Vary"]).toBe("Origin");
   });
 
+  it("does not serve precompressed variants for Cache-Control: no-transform", async () => {
+    const jsContent = "code\n".repeat(500);
+    await writeFile(clientDir, "_next/static/nt-ddd444.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/nt-ddd444.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+    const cache = await StaticFileCache.create(clientDir);
+    const pathname = "/_next/static/nt-ddd444.js";
+    const serve = async (extraReqHeaders: Record<string, string>) => {
+      const { res, captured } = mockRes();
+      await tryServeStatic(mockReq("br", extraReqHeaders), res, clientDir, pathname, true, cache, {
+        "cache-control": "public, max-age=60, no-transform",
+      });
+      await captured.ended;
+      return captured;
+    };
+
+    const full = await serve({});
+    expect(full.status).toBe(200);
+    expect(full.headers["Content-Encoding"]).toBeUndefined();
+    expect(full.headers["Vary"]).toBeUndefined();
+    expect(full.body.toString()).toBe(jsContent);
+
+    const notModified = await serve({ "if-none-match": String(full.headers.ETag) });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["Content-Encoding"]).toBeUndefined();
+    expect(notModified.headers["Vary"]).toBeUndefined();
+  });
+
   // ── Directory traversal protection ─────────────────────────────
 
   it("blocks directory traversal attempts", async () => {
