@@ -4926,7 +4926,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
                 assetPrefix: nextConfig?.assetPrefix,
                 crossOrigin: nextConfig?.crossOrigin,
-                compress: nextConfig?.compress,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
                 cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
@@ -7921,6 +7920,9 @@ export const loadServerActionClient = ${
           }
           const manifest = {
             prerenderSecret,
+            // next.config `compress`, read by the Node production server for
+            // every entry shape (including Worker-style facades).
+            compress: nextConfig?.compress !== false,
             ...(serverRuntimeOutputDirs.size === 0
               ? {}
               : {

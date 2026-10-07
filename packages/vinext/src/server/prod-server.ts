@@ -72,7 +72,7 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { collectInlineCssManifest } from "../build/inline-css.js";
-import { readPrerenderSecret } from "../build/server-manifest.js";
+import { readPrerenderSecret, readServerCompress } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
@@ -1642,6 +1642,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
   const prerenderSecret = readPrerenderSecret(serverDir);
+  // next.config `compress: false` turns compression off, as in `next start`.
+  const compress = compressOption && readServerCompress(serverDir);
 
   // Import the RSC handler. importServerEntryModule uses the bare file://
   // URL so lazy chunks that import the entry back resolve to the same module
@@ -1675,8 +1677,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       : "";
   const appRouterBasePath: string =
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
-  // next.config `compress: false` turns compression off, as in `next start`.
-  const compress = compressOption && rscModule.__compress !== false;
   const appRouterInlineCss = rscModule.__inlineCss === true;
   const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
   const appRouterI18nConfig: NextI18nConfig | null = rscModule.__i18nConfig ?? null;
@@ -2066,9 +2066,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
   const prerenderSecret = readPrerenderSecret(path.dirname(serverEntryPath));
 
-  // Extract config values (embedded at build time in the server entry)
   // next.config `compress: false` turns compression off, as in `next start`.
-  const compress = compressOption && vinextConfig?.compress !== false;
+  const compress = compressOption && readServerCompress(path.dirname(serverEntryPath));
+
+  // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";
   const assetPrefix: string = vinextConfig?.assetPrefix ?? "";
   // Path component of `assetPrefix` against which incoming requests are

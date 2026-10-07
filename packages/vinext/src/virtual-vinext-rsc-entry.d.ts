@@ -13,7 +13,6 @@ declare module "virtual:vinext-rsc-entry" {
   export default rscHandler;
   export const __assetPrefix: string;
   export const __basePath: string;
-  export const __compress: boolean;
   export const __cacheabilityManifest: string | null;
   export const __hasPagesDir: boolean;
   export const __imageAllowedWidths: number[];
@@ -45,7 +44,6 @@ declare module "virtual:vinext-app-request-entry" {
   export default requestHandler;
   export const __assetPrefix: string;
   export const __basePath: string;
-  export const __compress: boolean;
   export const __imageAllowedWidths: number[];
   export const __prerenderSecret: string;
   export function __ensureHybridPagesApplication(): void | Promise<unknown>;
