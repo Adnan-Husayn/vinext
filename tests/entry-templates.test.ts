@@ -2023,6 +2023,39 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  it("embeds next.config compress in vinextConfig for the production server", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-compress-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const defaulted = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+      expect(defaulted).toContain('"compress":true');
+
+      const disabled = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({ compress: false }),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+      expect(disabled).toContain('"compress":false');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports trusted _next/data classification from URL normalization", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
     const pagesDir = path.join(tmpDir, "pages");

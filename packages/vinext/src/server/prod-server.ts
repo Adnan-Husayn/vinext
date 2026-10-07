@@ -96,6 +96,12 @@ import {
   parseAcceptedEncodings,
   selectContentEncoding,
 } from "./accept-encoding.js";
+import {
+  COMPRESS_THRESHOLD,
+  isCompressibleContentType,
+  parseContentLengthHeader,
+  resolveResponseCompression,
+} from "./response-compression.js";
 import { ifRangeAllowsRange, parseByteRange, type ByteRange } from "./http-range.js";
 import { evaluateStaticPreconditions } from "./http-conditional.js";
 import { parseHttpDate } from "./http-date.js";
@@ -296,28 +302,6 @@ export type ProdServerOptions = {
   silent?: boolean;
 };
 
-/** Content types that benefit from compression. */
-const COMPRESSIBLE_TYPES = new Set([
-  "text/html",
-  "text/css",
-  "text/plain",
-  "text/xml",
-  "text/javascript",
-  "text/x-component",
-  "application/javascript",
-  "application/json",
-  "application/xml",
-  "application/xhtml+xml",
-  "application/rss+xml",
-  "application/atom+xml",
-  "image/svg+xml",
-  "application/manifest+json",
-  "application/wasm",
-]);
-
-/** Minimum size threshold for compression (in bytes). Below this, compression overhead isn't worth it. */
-const COMPRESS_THRESHOLD = 1024;
-
 /**
  * Create a compression stream for the given encoding.
  */
@@ -442,6 +426,16 @@ function omitHeadersCaseInsensitive(
   return filtered;
 }
 
+function readHeaderCaseInsensitive(
+  headersRecord: Record<string, string | string[]>,
+  name: string,
+): string | undefined {
+  const key = Object.keys(headersRecord).find((entry) => entry.toLowerCase() === name);
+  if (key === undefined) return undefined;
+  const value = headersRecord[key];
+  return Array.isArray(value) ? value.join(", ") : value;
+}
+
 function mergeVaryHeader(
   headers: Record<string, string | string[]>,
   value: string,
@@ -561,10 +555,17 @@ function sendCompressed(
   statusText?: string,
 ): void {
   const buf = typeof body === "string" ? Buffer.from(body) : body;
-  const baseType = contentType.split(";")[0].trim();
-  const varyByEncoding = compress && COMPRESSIBLE_TYPES.has(baseType);
-  const encoding = compress ? negotiateEncoding(req) : "identity";
   const headersWithoutBodyHeaders = omitHeadersCaseInsensitive(extraHeaders, OMIT_BODY_HEADERS);
+  const { varyAcceptEncoding: varyByEncoding, encoding } = resolveResponseCompression(
+    req,
+    compress,
+    {
+      contentType,
+      cacheControl: readHeaderCaseInsensitive(extraHeaders, "cache-control"),
+      contentEncoding: readHeaderCaseInsensitive(extraHeaders, "content-encoding"),
+      contentLength: buf.length,
+    },
+  );
 
   const writeHead = (
     headers: Record<string, string | string[]>,
@@ -578,7 +579,8 @@ function sendCompressed(
     }
   };
 
-  if (encoding !== "identity" && varyByEncoding && buf.length >= COMPRESS_THRESHOLD) {
+  if (encoding !== "identity") {
+    // HEAD responses are never compressed (see resolveResponseCompression).
     writeHead(
       mergeVaryHeader(
         {
@@ -589,13 +591,6 @@ function sendCompressed(
         "Accept-Encoding",
       ),
     );
-    // HEAD (RFC 9110): emit headers only, no body. Mirrors sendWebResponse.
-    // Returning here also avoids spinning up a compressor for a payload Node
-    // would discard anyway (HEAD bodies are dropped at the socket level).
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
     const compressor = createCompressor(encoding);
     compressor.end(buf);
     pipeline(compressor, res, () => {
@@ -855,8 +850,7 @@ async function tryServeStatic(
   const etag =
     (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
     `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
-  const baseType = ct.split(";")[0].trim();
-  const isCompressible = compress && COMPRESSIBLE_TYPES.has(baseType);
+  const isCompressible = compress && isCompressibleContentType(ct);
 
   const baseHeaders: Record<string, string | string[]> = {
     "Content-Type": ct,
@@ -1203,29 +1197,34 @@ async function sendWebResponse(
     }
   });
 
-  // Check if we should compress the response.
-  // Skip if the upstream already compressed (avoid double-compression).
-  const contentEncoding = webResponse.headers.get("content-encoding");
-  const alreadyEncoded = contentEncoding !== null;
-  if (!webResponse.body) {
-    writeHead(nodeHeaders);
-    res.end();
-    return;
-  }
-
-  const contentType = webResponse.headers.get("content-type") ?? "";
-  const baseType = contentType.split(";")[0].trim();
-  const varyByEncoding = compress && !alreadyEncoded && COMPRESSIBLE_TYPES.has(baseType);
-  const encoding = compress && !alreadyEncoded ? negotiateEncoding(req) : "identity";
-  const shouldCompress = encoding !== "identity" && COMPRESSIBLE_TYPES.has(baseType);
+  // Decide compression before writing headers. Streamed bodies of unknown
+  // length are compressed regardless of size; an empty body never is.
+  const { varyAcceptEncoding: varyByEncoding, encoding } = resolveResponseCompression(
+    req,
+    compress,
+    {
+      contentType: webResponse.headers.get("content-type"),
+      cacheControl: webResponse.headers.get("cache-control"),
+      contentEncoding: webResponse.headers.get("content-encoding"),
+      contentLength: webResponse.body
+        ? parseContentLengthHeader(webResponse.headers.get("content-length"))
+        : 0,
+    },
+  );
+  const shouldCompress = encoding !== "identity";
 
   if (shouldCompress) {
     delete nodeHeaders["content-length"];
-    delete nodeHeaders["Content-Length"];
-    nodeHeaders["Content-Encoding"] = encoding!;
+    delete nodeHeaders["content-encoding"];
+    nodeHeaders["Content-Encoding"] = encoding;
   }
 
   writeHead(varyByEncoding ? mergeVaryHeader(nodeHeaders, "Accept-Encoding") : nodeHeaders);
+
+  if (!webResponse.body) {
+    res.end();
+    return;
+  }
 
   // HEAD requests: send headers only, skip the body
   if (req.method === "HEAD") {
@@ -1241,7 +1240,7 @@ async function sendWebResponse(
   if (shouldCompress) {
     // Use streaming flush modes so progressive HTML remains decodable before the
     // full response completes.
-    const compressor = createCompressor(encoding!, "streaming");
+    const compressor = createCompressor(encoding, "streaming");
     await new Promise<void>((resolve) => {
       pipeline(nodeStream, compressor, res, () => {
         // A closed connection terminates the request just as a completed body
@@ -1601,7 +1600,16 @@ function installPagesClientAssets(options: {
  * 4. Stream the Web Response back (with optional compression)
  */
 async function startAppRouterServer(options: AppRouterServerOptions) {
-  const { port, host, clientDir, serverDir, rscEntryPath, compress, purpose, silent } = options;
+  const {
+    port,
+    host,
+    clientDir,
+    serverDir,
+    rscEntryPath,
+    compress: compressOption,
+    purpose,
+    silent,
+  } = options;
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
@@ -1639,6 +1647,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       : "";
   const appRouterBasePath: string =
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
+  // next.config `compress: false` turns compression off, as in `next start`.
+  const compress = compressOption && rscModule.__compress !== false;
   const appRouterInlineCss = rscModule.__inlineCss === true;
   const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
   const appRouterI18nConfig: NextI18nConfig | null = rscModule.__i18nConfig ?? null;
@@ -1989,7 +1999,15 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  * - vinextConfig — embedded next.config.js settings
  */
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
-  const { port, host, clientDir, serverEntryPath, compress, purpose, silent } = options;
+  const {
+    port,
+    host,
+    clientDir,
+    serverEntryPath,
+    compress: compressOption,
+    purpose,
+    silent,
+  } = options;
 
   // Import the server entry module. importServerEntryModule uses the bare
   // file:// URL so lazy chunks that import the entry back resolve to the same
@@ -2021,6 +2039,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const prerenderSecret = readPrerenderSecret(path.dirname(serverEntryPath));
 
   // Extract config values (embedded at build time in the server entry)
+  // next.config `compress: false` turns compression off, as in `next start`.
+  const compress = compressOption && vinextConfig?.compress !== false;
   const basePath: string = vinextConfig?.basePath ?? "";
   const assetPrefix: string = vinextConfig?.assetPrefix ?? "";
   // Path component of `assetPrefix` against which incoming requests are
@@ -2527,7 +2547,7 @@ export {
   sendWebResponse,
   waitForNodeResponseCompletion,
   negotiateEncoding,
-  COMPRESSIBLE_TYPES,
+  isCompressibleContentType,
   COMPRESS_THRESHOLD,
   resolveHost,
   trustedHosts,

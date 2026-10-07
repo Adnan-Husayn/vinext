@@ -185,6 +185,8 @@ type AppRouterConfig = {
   assetPrefix?: string;
   /** CORS mode for framework-managed assets from next.config. */
   crossOrigin?: "anonymous" | "use-credentials";
+  /** next.config `compress`. Exported for the Node production server. */
+  compress?: boolean;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime?: number;
   /**
@@ -410,6 +412,7 @@ const __draftModeSecret = ${JSON.stringify(config?.draftModeSecret ?? "")};
 export const __prerenderSecret = ${JSON.stringify(config?.prerenderSecret ?? "")};
 export const __assetPrefix = ${JSON.stringify(config?.assetPrefix ?? "")};
 export const __crossOrigin = ${JSON.stringify(config?.crossOrigin ?? "")};
+export const __compress = ${JSON.stringify(config?.compress !== false)};
 export { __basePath };
 export const __imageAllowedWidths = ${JSON.stringify([
     ...(config?.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
@@ -1224,6 +1227,7 @@ const __reactMaxHeadersLength = ${JSON.stringify(reactMaxHeadersLength)};
 // \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 export const __crossOrigin = ${JSON.stringify(crossOrigin)};
+export const __compress = ${JSON.stringify(config?.compress !== false)};
 export const __imageAllowedWidths = ${JSON.stringify(imageAllowedWidths)};
 export const __imageConfig = ${JSON.stringify(imageConfig)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};

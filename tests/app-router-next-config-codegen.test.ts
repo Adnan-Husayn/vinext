@@ -221,6 +221,16 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain('export const __crossOrigin = "use-credentials";');
   });
 
+  it("embeds next.config compress for the production server", () => {
+    const defaulted = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    expect(defaulted).toContain("export const __compress = true;");
+
+    const disabled = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      compress: false,
+    });
+    expect(disabled).toContain("export const __compress = false;");
+  });
+
   it("includes config pattern matching function for regex patterns", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/docs/:path*", destination: "/wiki/:path*", permanent: false }],
