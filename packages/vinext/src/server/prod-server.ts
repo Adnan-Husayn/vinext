@@ -436,6 +436,24 @@ function readHeaderCaseInsensitive(
   return Array.isArray(value) ? value.join(", ") : value;
 }
 
+/** Remove one field name from a Vary header, dropping the header if it empties. */
+function omitVaryToken(
+  headers: Record<string, string | string[]>,
+  token: string,
+): Record<string, string | string[]> {
+  const varyKey = Object.keys(headers).find((key) => key.toLowerCase() === "vary");
+  if (varyKey === undefined) return headers;
+  const rawVary = headers[varyKey];
+  const remaining = (Array.isArray(rawVary) ? rawVary.join(",") : rawVary)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && entry.toLowerCase() !== token.toLowerCase());
+  const result = { ...headers };
+  delete result[varyKey];
+  if (remaining.length > 0) result[varyKey] = remaining.join(", ");
+  return result;
+}
+
 function mergeVaryHeader(
   headers: Record<string, string | string[]>,
   value: string,
@@ -700,6 +718,16 @@ async function tryServeStatic(
           : selected === "gzip"
             ? entry.gz!
             : entry.original;
+    // The cache adds `Vary: Accept-Encoding` to the identity and 304 headers
+    // whenever a precompressed sidecar exists. With compression disabled no
+    // representation varies by Accept-Encoding, so drop that token.
+    const notModifiedBaseHeaders = compress
+      ? entry.notModifiedHeaders
+      : omitVaryToken(entry.notModifiedHeaders, "Accept-Encoding");
+    const originalHeaders = compress
+      ? entry.original.headers
+      : omitVaryToken(entry.original.headers, "Accept-Encoding");
+    const variantHeaders = variant === entry.original ? originalHeaders : variant.headers;
 
     const validators = extraHeaders
       ? resolveStaticValidators(entry.etag, entry.mtimeMs, extraHeaders)
@@ -714,7 +742,7 @@ async function tryServeStatic(
 
     if (preconditionResult === "precondition-failed") {
       res.writeHead(412, {
-        ...entry.notModifiedHeaders,
+        ...notModifiedBaseHeaders,
         ...extraHeaders,
         "Content-Type": entry.original.headers["Content-Type"],
         "Accept-Ranges": "bytes",
@@ -725,8 +753,8 @@ async function tryServeStatic(
 
     if (preconditionResult === "not-modified") {
       const notModifiedHeaders = variesByEncoding
-        ? mergeVaryHeader({ ...entry.notModifiedHeaders, ...extraHeaders }, "Accept-Encoding")
-        : { ...entry.notModifiedHeaders, ...extraHeaders };
+        ? mergeVaryHeader({ ...notModifiedBaseHeaders, ...extraHeaders }, "Accept-Encoding")
+        : { ...notModifiedBaseHeaders, ...extraHeaders };
       if (selected !== "identity") notModifiedHeaders["Content-Encoding"] = selected;
       res.writeHead(304, notModifiedHeaders);
       res.end();
@@ -744,7 +772,7 @@ async function tryServeStatic(
 
     if (range.kind === "unsatisfiable") {
       res.writeHead(416, {
-        ...entry.notModifiedHeaders,
+        ...notModifiedBaseHeaders,
         ...extraHeaders,
         "Content-Type": entry.original.headers["Content-Type"],
         "Accept-Ranges": "bytes",
@@ -759,7 +787,7 @@ async function tryServeStatic(
       // the content encoding negotiated for a full response.
       const length = range.end - range.start + 1;
       const rangeHeaders = {
-        ...entry.original.headers,
+        ...originalHeaders,
         ...extraHeaders,
         "Accept-Ranges": "bytes",
         "Content-Length": String(length),
@@ -782,7 +810,7 @@ async function tryServeStatic(
     }
 
     const responseHeaders = {
-      ...variant.headers,
+      ...variantHeaders,
       ...extraHeaders,
       "Accept-Ranges": "bytes",
     };

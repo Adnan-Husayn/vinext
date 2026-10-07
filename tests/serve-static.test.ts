@@ -357,6 +357,49 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Vary"]).toBe("Accept-Encoding");
   });
 
+  it("does not vary precompressed assets by Accept-Encoding when compression is disabled", async () => {
+    const jsContent = "code\n".repeat(500);
+    await writeFile(clientDir, "_next/static/off-ccc333.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/off-ccc333.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+    const cache = await StaticFileCache.create(clientDir);
+    const pathname = "/_next/static/off-ccc333.js";
+    const serve = async (extraReqHeaders: Record<string, string>, extraHeaders = {}) => {
+      const { res, captured } = mockRes();
+      await tryServeStatic(
+        mockReq("br", extraReqHeaders),
+        res,
+        clientDir,
+        pathname,
+        false,
+        cache,
+        extraHeaders,
+      );
+      await captured.ended;
+      return captured;
+    };
+
+    const full = await serve({});
+    expect(full.status).toBe(200);
+    expect(full.headers["Content-Encoding"]).toBeUndefined();
+    expect(full.headers["Vary"]).toBeUndefined();
+
+    const notModified = await serve({ "if-none-match": String(full.headers.ETag) });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["Vary"]).toBeUndefined();
+
+    const partial = await serve({ range: "bytes=0-9" });
+    expect(partial.status).toBe(206);
+    expect(partial.headers["Vary"]).toBeUndefined();
+
+    // Unrelated Vary fields from configured headers are preserved.
+    const configured = await serve({}, { Vary: "Origin" });
+    expect(configured.headers["Vary"]).toBe("Origin");
+  });
+
   // ── Directory traversal protection ─────────────────────────────
 
   it("blocks directory traversal attempts", async () => {

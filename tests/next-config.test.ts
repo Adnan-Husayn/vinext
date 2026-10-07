@@ -431,6 +431,20 @@ describe("loadNextConfig function-form defaultConfig argument", () => {
     const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
     expect(config?.pageExtensions).toEqual(["tsx", "ts", "jsx", "js", "page.ts"]);
   });
+
+  it("passes the real compress default to a function-form config", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = (phase, { defaultConfig }) => ({\n` +
+        `  compress: defaultConfig.compress && false,\n` +
+        `});\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.compress).toBe(false);
+    expect((await resolveNextConfig(config)).compress).toBe(false);
+  });
 });
 
 describe("loadNextConfig with CJS globals in next.config.ts", () => {
